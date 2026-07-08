@@ -2,7 +2,10 @@
 import { basename, dirname, join } from 'path'
 import type { TrustedGroupMode } from './trusted-groups'
 
-async function run(cmd: string[], opts: { cwd?: string; env?: Record<string, string> } = {}) {
+async function run(
+  cmd: string[],
+  opts: { cwd?: string; env?: Record<string, string>; stdin?: 'ignore' | 'inherit' } = {},
+) {
   const proc = Bun.spawn(cmd, { ...opts, stdout: 'pipe', stderr: 'pipe' })
   const [out, err] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -30,9 +33,12 @@ export async function resolveWorktreeDir(baseDir: string, branch: string): Promi
   return dir
 }
 
+// ponytail: hardcoded to wt.py's `new <branch> --db clean` CLI shape — the only
+// hook script in use right now. Generalize the arg contract if a second one shows up.
 export async function resolveHookDir(hookPath: string, branch: string, groupDir: string): Promise<string> {
-  const res = await run([hookPath, branch], {
+  const res = await run([hookPath, 'new', branch, '--db', 'clean'], {
     cwd: groupDir,
+    stdin: 'ignore', // forces non-interactive defaults (isatty()===false) — no hang on a prompt
     env: { ...process.env, TELEGRAM_TOPIC_BRANCH: branch, TELEGRAM_GROUP_DIR: groupDir },
   })
   if (!res.ok) {
