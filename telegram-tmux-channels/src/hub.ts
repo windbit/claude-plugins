@@ -47,6 +47,13 @@ function codePath(p: string): string {
   return `<code>${escHtml(tildePath(p))}</code>`
 }
 
+// "typing…" hint — shown whenever the agent is handed input to work on.
+function typing(chatId: string, threadId?: number): void {
+  void bot.api
+    .sendChatAction(chatId, 'typing', threadId != null ? { message_thread_id: threadId } : {})
+    .catch(() => {})
+}
+
 // token and admins from state .env; the real env wins
 try {
   chmodSync(ENV_FILE, 0o600)
@@ -470,6 +477,7 @@ async function handlePickCallback(
     await sendKeys(pane, String(action.index))
     await resolvePickerMessage(ap, `✅ <b>${escHtml(labelOf(action.index))}</b>`)
     activePickers.delete(pane)
+    typing(ap.chatId, ap.threadId) // agent resumes on the answer
     await ctx.answerCallbackQuery({ text: 'Выбрано' }).catch(() => {})
   } else if (action.kind === 'opt') {
     await sendKeys(pane, String(action.index)) // multi: toggle checkbox
@@ -484,6 +492,7 @@ async function handlePickCallback(
     await sendKeys(pane, '1') // Submit answers
     await resolvePickerMessage(ap, `✅ <b>${chosen.length ? escHtml(chosen.join(', ')) : '—'}</b>`)
     activePickers.delete(pane)
+    typing(ap.chatId, ap.threadId) // agent resumes on the submitted answers
     await ctx.answerCallbackQuery({ text: 'Отправлено' }).catch(() => {})
   } else {
     // "Type something" is an inline-editable option: the digit navigates to it and
@@ -579,9 +588,10 @@ async function handleInbound({ ctx, text, downloadImage, attachment }: Inbound):
     }
     if (isAdmin(senderId) || bindingAllows(chat_id, senderId)) {
       await typeLine(pane, text)
+      typing(chat_id, threadId) // agent now processes the custom answer
       const ap = activePickers.get(pane)
       if (ap) {
-        await resolvePickerMessage(ap, `✅ ${text}`)
+        await resolvePickerMessage(ap, `✅ <b>${escHtml(text)}</b>`)
         activePickers.delete(pane)
       }
       awaitingCustom.delete(pane)
@@ -634,7 +644,7 @@ async function handleInbound({ ctx, text, downloadImage, attachment }: Inbound):
       .catch(() => {})
   }
   // thread_id is required, otherwise typing goes to General instead of the topic
-  void bot.api.sendChatAction(chat_id, 'typing', threadId != null ? { message_thread_id: threadId } : {}).catch(() => {})
+  typing(chat_id, threadId)
   const imagePath = downloadImage ? await downloadImage() : undefined
   const meta: Record<string, string> = {
     chat_id,
