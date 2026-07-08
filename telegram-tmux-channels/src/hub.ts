@@ -391,6 +391,7 @@ async function detectPicker(pane: string, cwd: string, text: string): Promise<vo
     })
     .catch(() => undefined)
   if (sent) {
+    log(`picker sent: pane=${pane} mode=${picker.mode} opts=${picker.options.length} title="${picker.title.slice(0, 40)}"`)
     activePickers.set(pane, {
       chatId: target.chatId,
       ...(target.threadId != null ? { threadId: target.threadId } : {}),
@@ -438,6 +439,7 @@ async function handlePickCallback(
     return
   }
   const action = pick.action
+  log(`pick: pane=${pane} from=${senderId} action=${action.kind}${action.kind === 'opt' ? action.index : ''}`)
   const labelOf = (i: number) => ap.picker.options.find(o => o.index === i)?.label ?? String(i)
   if (action.kind === 'opt' && ap.picker.mode === 'single') {
     await sendKeys(pane, String(action.index))
