@@ -33,7 +33,7 @@ import {
   loadTrustedGroups, isExcludedTopic, slugFromTopicName, MODE_LABEL,
   type TrustedGroupConfig, type TrustedGroupMode,
 } from './trusted-groups'
-import { resolveModeDir, gitBranch } from './dir-resolve'
+import { resolveModeDir, gitBranch, runHookDelete } from './dir-resolve'
 import { jsonlMtimes, captureNewSessionId } from './session-id'
 import { recordChat, chatLabel } from './known-chats'
 
@@ -724,7 +724,11 @@ async function runAutoTopic(
   try {
     const resolvedDir = await resolveModeDir(mode, dir, cfg.hook, branch)
     const reg = loadBindings()
-    reg[key] = { dir: resolvedDir, ...(cfg.cmdline ? { cmdline: cfg.cmdline } : {}) }
+    reg[key] = {
+      dir: resolvedDir,
+      ...(cfg.cmdline ? { cmdline: cfg.cmdline } : {}),
+      ...(mode === 'hook' ? { hookBranch: branch } : {}),
+    }
     saveBindings(reg)
     await spawnSession(key, reg[key], 'new', say)
   } catch (e) {
@@ -983,7 +987,18 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
       }
       delete reg[key]
       saveBindings(reg)
-      void say(`🔓 <b>Отвязано</b> <i>(было ${codePath(binding.dir)})</i>`)
+      const unboundNote = `🔓 <b>Отвязано</b> <i>(было ${codePath(binding.dir)})</i>`
+      const groupCfg = binding.hookBranch ? loadTrustedGroups()[keyToTarget(key).chat_id] : undefined
+      if (binding.hookBranch && groupCfg?.hook?.delete && groupCfg.dir) {
+        try {
+          await runHookDelete(groupCfg.hook, binding.hookBranch, groupCfg.dir)
+          void say(`${unboundNote}\n🗑 Хук очистки (<code>${escHtml(binding.hookBranch)}</code>) выполнен.`)
+        } catch (e) {
+          void say(`${unboundNote}\n⚠️ Хук очистки не удался: ${escHtml(String(e))}`)
+        }
+        return
+      }
+      void say(unboundNote)
       return
     }
     // allow

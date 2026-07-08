@@ -1,6 +1,6 @@
 // Resolve a working directory for an auto-topic binding, per trusted-group mode.
 import { basename, dirname, join } from 'path'
-import type { TrustedGroupMode } from './trusted-groups'
+import type { HookConfig, TrustedGroupMode } from './trusted-groups'
 
 async function run(
   cmd: string[],
@@ -33,29 +33,46 @@ export async function resolveWorktreeDir(baseDir: string, branch: string): Promi
   return dir
 }
 
-// ponytail: hardcoded to wt.py's `new <branch> --db clean` CLI shape — the only
-// hook script in use right now. Generalize the arg contract if a second one shows up.
-export async function resolveHookDir(hookPath: string, branch: string, groupDir: string): Promise<string> {
-  const res = await run([hookPath, 'new', branch, '--db', 'clean'], {
+function fillTemplate(template: string, branch: string, dir: string): string {
+  return template.replaceAll('{branch}', branch).replaceAll('{dir}', dir)
+}
+
+async function runHookCommand(template: string, branch: string, groupDir: string) {
+  const cmd = fillTemplate(template, branch, groupDir)
+  return run(['sh', '-c', cmd], {
     cwd: groupDir,
     stdin: 'ignore', // forces non-interactive defaults (isatty()===false) — no hang on a prompt
     env: { ...process.env, TELEGRAM_TOPIC_BRANCH: branch, TELEGRAM_GROUP_DIR: groupDir },
   })
+}
+
+export async function resolveHookDir(hook: HookConfig, branch: string, groupDir: string): Promise<string> {
+  const res = await runHookCommand(hook.create, branch, groupDir)
   if (!res.ok) {
-    throw new Error(`hook ${hookPath} failed: ${(res.err || res.out).trim()}`)
+    throw new Error(`hook create failed: ${(res.err || res.out).trim()}`)
   }
   const lines = res.out.trim().split('\n').filter(Boolean)
   const dir = lines[lines.length - 1]?.trim()
   if (!dir) {
-    throw new Error(`hook ${hookPath} printed no path`)
+    throw new Error('hook create printed no path')
   }
   return dir
+}
+
+export async function runHookDelete(hook: HookConfig, branch: string, groupDir: string): Promise<void> {
+  if (!hook.delete) {
+    return
+  }
+  const res = await runHookCommand(hook.delete, branch, groupDir)
+  if (!res.ok) {
+    throw new Error(`hook delete failed: ${(res.err || res.out).trim()}`)
+  }
 }
 
 export async function resolveModeDir(
   mode: TrustedGroupMode,
   baseDir: string,
-  hook: string | undefined,
+  hook: HookConfig | undefined,
   branch: string,
 ): Promise<string> {
   if (mode === 'folder') {

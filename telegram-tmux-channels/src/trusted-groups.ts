@@ -8,10 +8,13 @@ export const TRUSTED_GROUPS_FILE = join(STATE_DIR, 'trusted-groups.json')
 
 export type TrustedGroupMode = 'folder' | 'worktree' | 'hook'
 
+// shell command templates — {branch}/{dir} get substituted, run via `sh -c`
+export type HookConfig = { create: string; delete?: string }
+
 export type TrustedGroupConfig = {
   modes: TrustedGroupMode[] // 1 = auto, no picker; 2+ = per-topic button choice
   dir?: string // unset → ask for it per-topic, same as /bind
-  hook?: string
+  hook?: HookConfig
   cmdline?: string[]
   exclude?: { topicIds?: number[]; nameContains?: string[] }
 }
@@ -25,7 +28,7 @@ export const MODE_LABEL: Record<TrustedGroupMode, string> = {
 const DEFAULT_MODES: TrustedGroupMode[] = ['folder']
 
 type GroupDefaults = { modes?: TrustedGroupMode[]; cmdline?: string[]; dir?: string }
-type GroupEntry = GroupDefaults & { hook?: string; exclude?: TrustedGroupConfig['exclude'] }
+type GroupEntry = GroupDefaults & { hook?: HookConfig; exclude?: TrustedGroupConfig['exclude'] }
 type TrustedGroupsFile = { defaults?: GroupDefaults; groups?: Record<string, GroupEntry> }
 
 export function mergeGroupConfig(defaults: GroupDefaults | undefined, group: GroupEntry): TrustedGroupConfig {

@@ -257,8 +257,8 @@ describe('trusted-groups', () => {
     expect(mergeGroupConfig(defaults, { dir: '/g' })).toEqual({
       dir: '/g', modes: ['folder', 'worktree'], cmdline: ['claude'], hook: undefined, exclude: undefined,
     })
-    expect(mergeGroupConfig(defaults, { modes: ['hook'], hook: '/h.py' })).toEqual({
-      dir: '/default', modes: ['hook'], cmdline: ['claude'], hook: '/h.py', exclude: undefined,
+    expect(mergeGroupConfig(defaults, { modes: ['hook'], hook: { create: '/h.py' } })).toEqual({
+      dir: '/default', modes: ['hook'], cmdline: ['claude'], hook: { create: '/h.py' }, exclude: undefined,
     })
     expect(mergeGroupConfig(undefined, {})).toEqual({
       dir: undefined, modes: ['folder'], cmdline: undefined, hook: undefined, exclude: undefined,
