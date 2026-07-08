@@ -110,7 +110,10 @@ describe('limits', () => {
     }
     const lines = formatLimits(l, now)
     expect(lines).toEqual([
-      'context 34% · 5h 43%, resets 2h30m · 7d 30%, resets 1d0h (10m old)',
+      'context 34%',
+      '5h 43%, resets 2h30m',
+      '7d 30%, resets 1d0h',
+      '(data 10m old)',
     ])
     expect(formatLimits({ ageMs: 0 }, now)).toEqual([])
   })
