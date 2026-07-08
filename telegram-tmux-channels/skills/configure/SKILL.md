@@ -36,7 +36,7 @@ set/not-set, admins, and current bindings. Check the MCP stub is registered:
 ## First-time setup
 
 1. **Locate the plugin** (for the stub path):
-   `ls -d ~/.claude/plugins/cache/*/claude-telegram/*/src/stub.ts | tail -1`
+   `ls -d ~/.claude/plugins/cache/*/telegram-tmux-channels/*/src/stub.ts | tail -1`
 2. **Register the stub globally** so every session can reach Telegram:
    `claude mcp add --scope user telegram -- bun run <that stub.ts path>`
    (bun must be installed: https://bun.sh)

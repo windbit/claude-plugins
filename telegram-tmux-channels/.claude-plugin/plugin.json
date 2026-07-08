@@ -1,5 +1,5 @@
 {
-  "name": "claude-telegram",
+  "name": "telegram-tmux-channels",
   "description": "Telegram channel for Claude Code, hub-and-spoke: one bot, many sessions, topic→folder bindings via /bind from chat, tmux ops /compact,/esc,/restart,/resume,/new,/status. Fork of telegram@claude-plugins-official.",
   "version": "2.1.0",
   "keywords": [

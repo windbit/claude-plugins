@@ -60,21 +60,23 @@ export function fmtUntil(resetsAtSec: number, nowMs: number): string {
 }
 
 export function formatLimits(l: Limits, nowMs: number): string[] {
-  const parts: string[] = []
+  const lines: string[] = []
   if (l.contextPct != null) {
-    parts.push(`context ${l.contextPct}%`)
+    lines.push(`context ${l.contextPct}%`)
   }
   if (l.fiveHourPct != null) {
     const reset = l.fiveHourResetsAt != null ? `, resets ${fmtUntil(l.fiveHourResetsAt, nowMs)}` : ''
-    parts.push(`5h ${l.fiveHourPct}%${reset}`)
+    lines.push(`5h ${l.fiveHourPct}%${reset}`)
   }
   if (l.sevenDayPct != null) {
     const reset = l.sevenDayResetsAt != null ? `, resets ${fmtUntil(l.sevenDayResetsAt, nowMs)}` : ''
-    parts.push(`7d ${l.sevenDayPct}%${reset}`)
+    lines.push(`7d ${l.sevenDayPct}%${reset}`)
   }
-  if (parts.length === 0) {
+  if (lines.length === 0) {
     return []
   }
-  const stale = l.ageMs > STALE_LIMITS_MS ? ` (${fmtDuration(Math.floor(l.ageMs / 1000))} old)` : ''
-  return [parts.join(' · ') + stale]
+  if (l.ageMs > STALE_LIMITS_MS) {
+    lines.push(`(data ${fmtDuration(Math.floor(l.ageMs / 1000))} old)`)
+  }
+  return lines
 }

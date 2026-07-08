@@ -22,7 +22,7 @@
     <string>/bin/sh</string>
     <string>-c</string>
     <!-- REPLACE /opt/homebrew/bin/bun with your `which bun`: -->
-    <string>exec /opt/homebrew/bin/bun run "$(ls -d "$HOME"/.claude/plugins/cache/*/claude-telegram/*/src/hub.ts | sort -V | tail -1)"</string>
+    <string>exec /opt/homebrew/bin/bun run "$(ls -d "$HOME"/.claude/plugins/cache/*/telegram-tmux-channels/*/src/hub.ts | sort -V | tail -1)"</string>
   </array>
   <key>RunAtLoad</key>
   <true/>

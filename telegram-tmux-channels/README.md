@@ -1,4 +1,4 @@
-# claude-telegram — a Telegram channel for Claude Code with topic bindings
+# telegram-tmux-channels — a Telegram channel for Claude Code with topic bindings
 
 One Telegram bot drives **many Claude Code sessions** (hub-and-spoke). A forum topic
 or a DM binds to a project folder with `/bind` right from Telegram; the session replies
@@ -31,7 +31,7 @@ A fork of the official `telegram@claude-plugins-official`.
 
 ```
 /plugin marketplace add <git-url of this marketplace>
-/plugin install claude-telegram@<marketplace>
+/plugin install telegram-tmux-channels@<marketplace>
 /telegram:configure <bot-token>        # registers the stub, saves the token, asks for admin ids
 ```
 

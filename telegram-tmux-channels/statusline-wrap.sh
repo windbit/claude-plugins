@@ -3,7 +3,7 @@
 # (/status в чате) и передаёт его нетронутым в настоящий statusline-скрипт.
 # Подключение в ~/.claude/settings.json:
 #   "statusLine": { "type": "command",
-#     "command": "~/projects/homelab/apps/claude-telegram/statusline-wrap.sh ~/.claude/statusline.sh" }
+#     "command": "<plugin-dir>/statusline-wrap.sh ~/.claude/statusline.sh" }
 input=$(cat)
 
 dir="$HOME/.claude/channels/telegram/limits"
