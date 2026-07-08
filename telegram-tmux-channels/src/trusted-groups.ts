@@ -10,7 +10,7 @@ export type TrustedGroupMode = 'folder' | 'worktree' | 'hook'
 
 export type TrustedGroupConfig = {
   modes: TrustedGroupMode[] // 1 = auto, no picker; 2+ = per-topic button choice
-  dir: string
+  dir?: string // unset → ask for it per-topic, same as /bind
   hook?: string
   cmdline?: string[]
   exclude?: { topicIds?: number[]; nameContains?: string[] }
@@ -22,6 +22,22 @@ export const MODE_LABEL: Record<TrustedGroupMode, string> = {
   hook: '🪝 Hook',
 }
 
+const DEFAULT_MODES: TrustedGroupMode[] = ['folder']
+
+type GroupDefaults = { modes?: TrustedGroupMode[]; cmdline?: string[]; dir?: string }
+type GroupEntry = GroupDefaults & { hook?: string; exclude?: TrustedGroupConfig['exclude'] }
+type TrustedGroupsFile = { defaults?: GroupDefaults; groups?: Record<string, GroupEntry> }
+
+export function mergeGroupConfig(defaults: GroupDefaults | undefined, group: GroupEntry): TrustedGroupConfig {
+  return {
+    dir: group.dir ?? defaults?.dir,
+    modes: group.modes ?? defaults?.modes ?? DEFAULT_MODES,
+    cmdline: group.cmdline ?? defaults?.cmdline,
+    hook: group.hook,
+    exclude: group.exclude,
+  }
+}
+
 export function loadTrustedGroups(): Record<string, TrustedGroupConfig> {
   let raw: string
   try {
@@ -29,7 +45,15 @@ export function loadTrustedGroups(): Record<string, TrustedGroupConfig> {
   } catch {
     return {}
   }
-  return safeJsonParse<Record<string, TrustedGroupConfig>>(raw) ?? {}
+  const file = safeJsonParse<TrustedGroupsFile>(raw)
+  if (!file?.groups) {
+    return {}
+  }
+  const out: Record<string, TrustedGroupConfig> = {}
+  for (const [chatId, group] of Object.entries(file.groups)) {
+    out[chatId] = mergeGroupConfig(file.defaults, group)
+  }
+  return out
 }
 
 export function isExcludedTopic(cfg: TrustedGroupConfig, topicId: number, topicName: string): boolean {

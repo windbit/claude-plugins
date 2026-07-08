@@ -13,7 +13,10 @@ import {
   stripResumeFlags, buildLaunch, DEFAULT_CLAUDE_ARGV,
 } from '../src/tmux-ops'
 import { isClaudeArgv, claudePidsInDir, cmdlineOf, findClaudeAncestor } from '../src/proc'
-import { isExcludedTopic, slugFromTopicName, type TrustedGroupConfig } from '../src/trusted-groups'
+import {
+  isExcludedTopic, slugFromTopicName, mergeGroupConfig,
+  type TrustedGroupConfig, type TrustedGroupMode,
+} from '../src/trusted-groups'
 import { claudeProjectDir } from '../src/session-id'
 
 describe('bindings', () => {
@@ -246,6 +249,20 @@ describe('trusted-groups', () => {
     expect(slugFromTopicName('Fix login bug!')).toBe('Fix-login-bug')
     expect(slugFromTopicName('  spaced  ')).toBe('spaced')
     expect(slugFromTopicName('!!!')).toBe('topic')
+  })
+  test('mergeGroupConfig: group overrides win, falls back to defaults, dir optional', () => {
+    const defaults: { modes: TrustedGroupMode[]; cmdline: string[]; dir: string } = {
+      modes: ['folder', 'worktree'], cmdline: ['claude'], dir: '/default',
+    }
+    expect(mergeGroupConfig(defaults, { dir: '/g' })).toEqual({
+      dir: '/g', modes: ['folder', 'worktree'], cmdline: ['claude'], hook: undefined, exclude: undefined,
+    })
+    expect(mergeGroupConfig(defaults, { modes: ['hook'], hook: '/h.py' })).toEqual({
+      dir: '/default', modes: ['hook'], cmdline: ['claude'], hook: '/h.py', exclude: undefined,
+    })
+    expect(mergeGroupConfig(undefined, {})).toEqual({
+      dir: undefined, modes: ['folder'], cmdline: undefined, hook: undefined, exclude: undefined,
+    })
   })
 })
 

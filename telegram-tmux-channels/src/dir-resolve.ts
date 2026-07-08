@@ -1,6 +1,6 @@
 // Resolve a working directory for an auto-topic binding, per trusted-group mode.
 import { basename, dirname, join } from 'path'
-import type { TrustedGroupConfig, TrustedGroupMode } from './trusted-groups'
+import type { TrustedGroupMode } from './trusted-groups'
 
 async function run(cmd: string[], opts: { cwd?: string; env?: Record<string, string> } = {}) {
   const proc = Bun.spawn(cmd, { ...opts, stdout: 'pipe', stderr: 'pipe' })
@@ -40,15 +40,20 @@ export async function resolveHookDir(hookPath: string, branch: string, groupDir:
   return dir
 }
 
-export async function resolveModeDir(mode: TrustedGroupMode, cfg: TrustedGroupConfig, branch: string): Promise<string> {
+export async function resolveModeDir(
+  mode: TrustedGroupMode,
+  baseDir: string,
+  hook: string | undefined,
+  branch: string,
+): Promise<string> {
   if (mode === 'folder') {
-    return cfg.dir
+    return baseDir
   }
   if (mode === 'worktree') {
-    return resolveWorktreeDir(cfg.dir, branch)
+    return resolveWorktreeDir(baseDir, branch)
   }
-  if (!cfg.hook) {
+  if (!hook) {
     throw new Error('mode: hook requires "hook" in trusted-groups.json')
   }
-  return resolveHookDir(cfg.hook, branch, cfg.dir)
+  return resolveHookDir(hook, branch, baseDir)
 }

@@ -651,29 +651,48 @@ async function spawnSession(
 }
 
 // new forum topic in a trusted group → auto-bind + auto-start, no /bind needed
-type PendingTopic = {
-  cfg: TrustedGroupConfig
-  mode: TrustedGroupMode
-  say: (html: string) => void
-  timer: ReturnType<typeof setTimeout>
-}
+type PendingTopic =
+  | { stage: 'need-dir'; cfg: TrustedGroupConfig; mode: TrustedGroupMode; topicName: string; say: (html: string) => void }
+  | {
+      stage: 'branch-grace'
+      cfg: TrustedGroupConfig
+      dir: string
+      mode: TrustedGroupMode
+      topicName: string
+      say: (html: string) => void
+      timer: ReturnType<typeof setTimeout>
+    }
 const pendingTopics = new Map<string, PendingTopic>()
-// mode picker sent, waiting for a button tap — before the branch grace window starts
+// mode picker sent, waiting for a button tap — before dir/branch resolution starts
 type PendingModeChoice = { cfg: TrustedGroupConfig; topicName: string; say: (html: string) => void }
 const pendingModeChoice = new Map<string, PendingModeChoice>()
 const TOPIC_GRACE_MS = 4000
 
-function startTopicGrace(key: string, cfg: TrustedGroupConfig, mode: TrustedGroupMode, topicName: string, say: (html: string) => void): void {
+// mode is known — still need dir (ask, like /bind) and/or branch (grace window) before starting
+function beginDirOrBranch(
+  key: string,
+  cfg: TrustedGroupConfig,
+  mode: TrustedGroupMode,
+  topicName: string,
+  say: (html: string) => void,
+): void {
+  if (!cfg.dir) {
+    say('📁 Пришли папку для этого топика — как в <code>/bind</code>: имя в ~/projects или абсолютный путь.')
+    pendingTopics.set(key, { stage: 'need-dir', cfg, mode, topicName, say })
+    return
+  }
+  const dir = cfg.dir
   const timer = setTimeout(() => {
     pendingTopics.delete(key)
-    void runAutoTopic(key, cfg, mode, slugFromTopicName(topicName), say)
+    void runAutoTopic(key, cfg, dir, mode, slugFromTopicName(topicName), say)
   }, TOPIC_GRACE_MS)
-  pendingTopics.set(key, { cfg, mode, say, timer })
+  pendingTopics.set(key, { stage: 'branch-grace', cfg, dir, mode, topicName, say, timer })
 }
 
 async function runAutoTopic(
   key: string,
   cfg: TrustedGroupConfig,
+  dir: string,
   mode: TrustedGroupMode,
   branch: string,
   say: (html: string) => void,
@@ -681,14 +700,42 @@ async function runAutoTopic(
   const branchNote = mode === 'folder' ? '' : `, ветка <code>${escHtml(branch)}</code>`
   say(`⏳ Готовлю сессию (<code>${escHtml(mode)}</code>${branchNote})…`)
   try {
-    const dir = await resolveModeDir(mode, cfg, branch)
+    const resolvedDir = await resolveModeDir(mode, dir, cfg.hook, branch)
     const reg = loadBindings()
-    reg[key] = { dir, ...(cfg.cmdline ? { cmdline: cfg.cmdline } : {}) }
+    reg[key] = { dir: resolvedDir, ...(cfg.cmdline ? { cmdline: cfg.cmdline } : {}) }
     saveBindings(reg)
     await spawnSession(key, reg[key], 'new', say)
   } catch (e) {
     say(`⚠️ <b>Не удалось поднять сессию</b>: ${escHtml(String(e))}`)
   }
+}
+
+// forum_topic_created can be missed (hub down, race) — a message in an unbound
+// topic of a trusted group is treated the same way, using the message itself
+// as the branch/slug source (the topic's real title isn't available here).
+async function handleLateTopic(
+  key: string,
+  chatId: string,
+  threadId: number,
+  cfg: TrustedGroupConfig,
+  firstText: string,
+  say: (html: string) => void,
+): Promise<void> {
+  if (cfg.modes.length > 1) {
+    const kb = new InlineKeyboard()
+    for (const m of cfg.modes) {
+      kb.text(MODE_LABEL[m], `topicmode:${key}:${m}`).row()
+    }
+    pendingModeChoice.set(key, { cfg, topicName: firstText, say })
+    void bot.api
+      .sendMessage(chatId, 'Похоже, это новый топик — как поднять сессию?', {
+        message_thread_id: threadId,
+        reply_markup: kb,
+      })
+      .catch(() => {})
+    return
+  }
+  beginDirOrBranch(key, cfg, cfg.modes[0], firstText, say)
 }
 
 type Inbound = {
@@ -710,13 +757,29 @@ async function handleInbound({ ctx, text, downloadImage, attachment }: Inbound):
   const threadId = ctx.message?.message_thread_id
   const key = messageKey({ chatType: chat.type, chatId: chat_id, threadId })
   recordChat(chat_id, chat.type, chatLabel(chat), new Date().toISOString())
+  const say = (html: string) =>
+    void bot.api
+      .sendMessage(chat_id, html, { ...(threadId != null ? { message_thread_id: threadId } : {}), parse_mode: 'HTML' })
+      .catch(() => {})
 
-  // a message beat the auto-topic grace timer: it's an explicit branch name, not chat
+  // a message beat the auto-topic grace timer, or answered the "which folder" prompt
   const pendingTopic = pendingTopics.get(key)
   if (pendingTopic) {
+    if (pendingTopic.stage === 'need-dir') {
+      let dir: string
+      try {
+        dir = resolveProjectDir(text.trim(), PROJECTS_DIR)
+      } catch (e) {
+        pendingTopic.say(`⚠️ <b>Не похоже на папку</b>: ${escHtml(e instanceof Error ? e.message : String(e))}\n\nПришли ещё раз.`)
+        return
+      }
+      pendingTopics.delete(key)
+      await runAutoTopic(key, pendingTopic.cfg, dir, pendingTopic.mode, slugFromTopicName(pendingTopic.topicName), pendingTopic.say)
+      return
+    }
     clearTimeout(pendingTopic.timer)
     pendingTopics.delete(key)
-    await runAutoTopic(key, pendingTopic.cfg, pendingTopic.mode, text.trim(), pendingTopic.say)
+    await runAutoTopic(key, pendingTopic.cfg, pendingTopic.dir, pendingTopic.mode, text.trim(), pendingTopic.say)
     return
   }
 
@@ -758,6 +821,11 @@ async function handleInbound({ ctx, text, downloadImage, attachment }: Inbound):
     return
   }
 
+  // mode picker already sent for this topic — wait for the button, don't also treat text as anything else
+  if (pendingModeChoice.has(key)) {
+    return
+  }
+
   const ops = parseOpsCommand(text)
   if (ops && (!ops.bot || ops.bot.toLowerCase() === botUsername.toLowerCase())) {
     await handleOps({ cmd: ops.cmd, arg: ops.arg, key, chat_id, threadId, senderId })
@@ -766,6 +834,14 @@ async function handleInbound({ ctx, text, downloadImage, attachment }: Inbound):
 
   const binding = loadBindings()[key]
   if (!binding) {
+    if (threadId != null) {
+      const trustedCfg = loadTrustedGroups()[chat_id]
+      if (trustedCfg && !trustedCfg.exclude?.topicIds?.includes(threadId)) {
+        log(`late-binding: forum_topic_created missed for key=${key}, using message as trigger`)
+        await handleLateTopic(key, chat_id, threadId, trustedCfg, text, say)
+        return
+      }
+    }
     log(`drop (unbound): key=${key} from=${senderId} text=${text.slice(0, 60)}`)
     return
   }
@@ -774,10 +850,6 @@ async function handleInbound({ ctx, text, downloadImage, attachment }: Inbound):
     return
   }
   let conns = connsForBinding(key, binding.dir)
-  const say = (html: string) =>
-    void bot.api
-      .sendMessage(chat_id, html, { ...(threadId != null ? { message_thread_id: threadId } : {}), parse_mode: 'HTML' })
-      .catch(() => {})
   if (conns.length === 0) {
     log(`reviving: key=${key} dir=${binding.dir} — no live session for an inbound message`)
     await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', say)
@@ -1019,7 +1091,7 @@ bot.on('message:forum_topic_created', ctx => {
     return
   }
 
-  startTopicGrace(key, cfg, cfg.modes[0], topicName, say)
+  beginDirOrBranch(key, cfg, cfg.modes[0], topicName, say)
 })
 
 bot.on('message:text', async ctx => handleInbound({ ctx, text: ctx.message.text }))
@@ -1124,7 +1196,7 @@ bot.on('callback_query:data', async ctx => {
     pendingModeChoice.delete(key)
     await ctx.answerCallbackQuery({ text: MODE_LABEL[mode] }).catch(() => {})
     await ctx.editMessageText(`${MODE_LABEL[mode]} — выбрано.`).catch(() => {})
-    startTopicGrace(key, pending.cfg, mode, pending.topicName, pending.say)
+    beginDirOrBranch(key, pending.cfg, mode, pending.topicName, pending.say)
     return
   }
   const pick = parseCallback(ctx.callbackQuery.data)
