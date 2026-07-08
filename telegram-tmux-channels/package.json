@@ -1,5 +1,5 @@
 {
-  "name": "claude-telegram",
+  "name": "telegram-tmux-channels",
   "version": "1.0.0",
   "license": "Apache-2.0",
   "type": "module",

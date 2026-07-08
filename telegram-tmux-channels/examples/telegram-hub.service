@@ -16,7 +16,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/bin/sh -c 'exec bun run "$(ls -d %h/.claude/plugins/cache/*/claude-telegram/*/src/hub.ts | sort -V | tail -1)"'
+ExecStart=/bin/sh -c 'exec bun run "$(ls -d %h/.claude/plugins/cache/*/telegram-tmux-channels/*/src/hub.ts | sort -V | tail -1)"'
 Restart=on-failure
 RestartSec=3
 
