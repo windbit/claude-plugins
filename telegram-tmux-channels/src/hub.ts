@@ -29,6 +29,10 @@ import { readLimits, formatLimits } from './limits'
 import { rmQuiet } from './util'
 import { parsePicker, checkedIndexes, type Picker } from './picker'
 import { buildKeyboard, parseCallback } from './picker-drive'
+import {
+  loadTrustedGroups, isExcludedTopic, slugFromTopicName, type TrustedGroupConfig,
+} from './trusted-groups'
+import { resolveModeDir } from './dir-resolve'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
 
@@ -584,6 +588,61 @@ function trackedPids(): Set<number> {
   return out
 }
 
+// claude processes in `dir` the hub doesn't already track (mode: shared siblings don't count)
+function foreignPidsInDir(dir: string): number[] {
+  const tracked = trackedPids()
+  return claudePidsInDir(dir).filter(pid => !tracked.has(pid))
+}
+
+// tmux+launch for a binding — shared by /resume,/new and auto-topic creation
+async function spawnSession(
+  key: string,
+  binding: BindingEntry,
+  mode: 'resume' | 'new',
+  say: (html: string) => void,
+): Promise<void> {
+  const name = sessionName(key, binding.dir)
+  try {
+    const created = await ensureTmuxSession(name, binding.dir)
+    const launch = buildLaunch(binding.cmdline, mode)
+    say(
+      created
+        ? `🪟 tmux <code>${escHtml(name)}</code> создан в ${codePath(binding.dir)}.`
+        : `🪟 tmux <code>${escHtml(name)}</code> уже есть — набираю запуск в его активный pane.`,
+    )
+    const envPrefix = `TELEGRAM_BINDING_KEYS=${shellQuote([key])}`
+    await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${envPrefix} ${launch}`)
+    say(`🚀 <b>${mode === 'resume' ? 'Возобновляю' : 'Запускаю заново'}</b>\n<code>${escHtml(launch)}</code>`)
+    void ackStartupPrompts(`=${name}:`, log)
+  } catch (e) {
+    say(`⚠️ <b>${mode} не удалось</b>: ${escHtml(String(e))}`)
+  }
+}
+
+// new forum topic in a trusted group → auto-bind + auto-start, no /bind needed
+type PendingTopic = { cfg: TrustedGroupConfig; say: (html: string) => void; timer: ReturnType<typeof setTimeout> }
+const pendingTopics = new Map<string, PendingTopic>()
+const TOPIC_GRACE_MS = 4000
+
+async function runAutoTopic(
+  key: string,
+  cfg: TrustedGroupConfig,
+  branch: string,
+  say: (html: string) => void,
+): Promise<void> {
+  const branchNote = cfg.mode === 'shared' ? '' : `, ветка <code>${escHtml(branch)}</code>`
+  say(`⏳ Готовлю сессию (<code>${escHtml(cfg.mode)}</code>${branchNote})…`)
+  try {
+    const dir = await resolveModeDir(cfg, branch)
+    const reg = loadBindings()
+    reg[key] = { dir, ...(cfg.cmdline ? { cmdline: cfg.cmdline } : {}) }
+    saveBindings(reg)
+    await spawnSession(key, reg[key], 'new', say)
+  } catch (e) {
+    say(`⚠️ <b>Не удалось поднять сессию</b>: ${escHtml(String(e))}`)
+  }
+}
+
 type Inbound = {
   ctx: Context
   text: string
@@ -602,6 +661,15 @@ async function handleInbound({ ctx, text, downloadImage, attachment }: Inbound):
   const msgId = ctx.message?.message_id
   const threadId = ctx.message?.message_thread_id
   const key = messageKey({ chatType: chat.type, chatId: chat_id, threadId })
+
+  // a message beat the auto-topic grace timer: it's an explicit branch name, not chat
+  const pendingTopic = pendingTopics.get(key)
+  if (pendingTopic) {
+    clearTimeout(pendingTopic.timer)
+    pendingTopics.delete(key)
+    await runAutoTopic(key, pendingTopic.cfg, text.trim(), pendingTopic.say)
+    return
+  }
 
   // custom-answer text for a picker: a pane in this chat is waiting for free text
   for (const [pane, aw] of awaitingCustom) {
@@ -845,11 +913,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
     void say(`⚙️ Сессия уже подключена <i>(${session?.pane ? `<code>${escHtml(session.pane)}</code>` : 'не в tmux'})</i>.\n\nИспользуй <code>/restart</code> или <code>/compact</code>.`)
     return
   }
-  // A foreign claude in this dir (no channels, invisible to the hub): /resume=--continue
-  // would fork its conversation as a duplicate. Don't spawn — ask the operator to sort it out.
-  // Siblings we already track (mode: shared, other topics in this dir) don't count as foreign.
-  const tracked = trackedPids()
-  const foreign = claudePidsInDir(binding.dir).filter(pid => !tracked.has(pid))
+  const foreign = foreignPidsInDir(binding.dir)
   if (foreign.length > 0) {
     void say(
       `⚠️ <b>В этой папке уже работает claude</b> <i>(pid ${foreign.join(', ')})</i>, но без каналов — ` +
@@ -858,23 +922,31 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
     )
     return
   }
-  const name = sessionName(key, binding.dir)
-  try {
-    const created = await ensureTmuxSession(name, binding.dir)
-    const launch = buildLaunch(binding.cmdline, cmd === 'resume' ? 'resume' : 'new')
-    if (created) {
-      void say(`🪟 tmux <code>${escHtml(name)}</code> создан в ${codePath(binding.dir)}.`)
-    } else {
-      void say(`🪟 tmux <code>${escHtml(name)}</code> уже есть — набираю запуск в его активный pane.`)
-    }
-    const envPrefix = `TELEGRAM_BINDING_KEYS=${shellQuote([key])}`
-    await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${envPrefix} ${launch}`)
-    void say(`🚀 <b>${cmd === 'resume' ? 'Возобновляю' : 'Запускаю заново'}</b>\n<code>${escHtml(launch)}</code>`)
-    void ackStartupPrompts(`=${name}:`, log)
-  } catch (e) {
-    void say(`⚠️ <b>${escHtml(cmd)} не удалось</b>: ${escHtml(String(e))}`)
-  }
+  await spawnSession(key, binding, cmd === 'resume' ? 'resume' : 'new', html => void say(html))
 }
+
+bot.on('message:forum_topic_created', ctx => {
+  const chat_id = String(ctx.chat.id)
+  const cfg = loadTrustedGroups()[chat_id]
+  if (!cfg) {
+    return
+  }
+  const threadId = ctx.message.message_thread_id ?? ctx.message.message_id
+  const topicName = ctx.message.forum_topic_created.name
+  if (isExcludedTopic(cfg, threadId, topicName)) {
+    return
+  }
+  const key = messageKey({ chatType: ctx.chat.type, chatId: chat_id, threadId })
+  const say = (html: string) =>
+    void bot.api
+      .sendMessage(chat_id, html, { message_thread_id: threadId, parse_mode: 'HTML' })
+      .catch(() => {})
+  const timer = setTimeout(() => {
+    pendingTopics.delete(key)
+    void runAutoTopic(key, cfg, slugFromTopicName(topicName), say)
+  }, TOPIC_GRACE_MS)
+  pendingTopics.set(key, { cfg, say, timer })
+})
 
 bot.on('message:text', async ctx => handleInbound({ ctx, text: ctx.message.text }))
 

@@ -13,6 +13,7 @@ import {
   stripResumeFlags, buildLaunch, DEFAULT_CLAUDE_ARGV,
 } from '../src/tmux-ops'
 import { isClaudeArgv, claudePidsInDir, cmdlineOf, findClaudeAncestor } from '../src/proc'
+import { isExcludedTopic, slugFromTopicName, type TrustedGroupConfig } from '../src/trusted-groups'
 
 describe('bindings', () => {
   test('messageKey: dm / topic / group', () => {
@@ -216,5 +217,25 @@ describe('tmux-ops', () => {
     // tree walk: either null or a valid claude ancestor (never throws)
     const anc = findClaudeAncestor(process.pid)
     if (anc) expect(isClaudeArgv(anc.cmdline)).toBe(true)
+  })
+})
+
+describe('trusted-groups', () => {
+  const cfg: TrustedGroupConfig = {
+    mode: 'shared',
+    dir: '/x',
+    exclude: { topicIds: [1, 47], nameContains: ['hermes', '🔒'] },
+  }
+  test('isExcludedTopic: by id, by substring, neither', () => {
+    expect(isExcludedTopic(cfg, 1, 'anything')).toBe(true)
+    expect(isExcludedTopic(cfg, 2, 'hermes debug')).toBe(true)
+    expect(isExcludedTopic(cfg, 2, 'locked 🔒 topic')).toBe(true)
+    expect(isExcludedTopic(cfg, 2, 'fix login bug')).toBe(false)
+  })
+  test('slugFromTopicName: sanitizes, keeps slashes, falls back', () => {
+    expect(slugFromTopicName('feature/foo')).toBe('feature/foo')
+    expect(slugFromTopicName('Fix login bug!')).toBe('Fix-login-bug')
+    expect(slugFromTopicName('  spaced  ')).toBe('spaced')
+    expect(slugFromTopicName('!!!')).toBe('topic')
   })
 })
