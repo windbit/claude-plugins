@@ -145,7 +145,20 @@ function ownKeys(conn: Socket<undefined>): string[] {
   if (s?.bindingKeys?.length) {
     return s.bindingKeys
   }
-  return s?.cwd ? keysForDir(loadBindings(), s.cwd) : []
+  if (!s?.cwd) {
+    return []
+  }
+  // a legacy (no-bindingKeys) session falls back to "keys pointing at my dir", but
+  // never one another live session already explicitly claims (mode: folder dir-share)
+  const claimed = new Set<string>()
+  for (const c of router.all()) {
+    if (c !== conn) {
+      for (const k of router.get(c)?.bindingKeys ?? []) {
+        claimed.add(k)
+      }
+    }
+  }
+  return keysForDir(loadBindings(), s.cwd).filter(k => !claimed.has(k))
 }
 
 async function handleRpc(
@@ -575,7 +588,13 @@ function safeName(s: string | undefined): string | undefined {
 // per-binding session lookup, falls back to dir (sessions from before bindingKeys existed)
 function connsForBinding(key: string, dir: string): Socket<undefined>[] {
   const byKey = router.byBindingKey(key)
-  return byKey.length > 0 ? byKey : router.byDir(dir)
+  if (byKey.length > 0) {
+    return byKey
+  }
+  // dir-fallback is only for sessions that predate bindingKeys entirely — a session
+  // that already reports its own bindingKeys must never be pulled in via someone
+  // else's dir match (mode: folder can legitimately put two bindings on one dir).
+  return router.byDir(dir).filter(conn => !router.get(conn)?.bindingKeys?.length)
 }
 
 async function waitForBinding(key: string, timeoutMs: number): Promise<Socket<undefined>[]> {

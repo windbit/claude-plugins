@@ -35,8 +35,11 @@ export async function captureNewSessionId(
 ): Promise<string | undefined> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    for (const [id, mtime] of jsonlMtimes(dir)) {
-      if (mtime > (before.get(id) ?? 0)) {
+    // Only a file ABSENT from the snapshot counts as new — an mtime bump on an
+    // already-known id is just unrelated activity in a pre-existing session that
+    // happens to share this dir (mode: folder), not evidence of a new one.
+    for (const id of jsonlMtimes(dir).keys()) {
+      if (!before.has(id)) {
         return id
       }
     }
