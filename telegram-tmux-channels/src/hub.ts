@@ -30,10 +30,12 @@ import { rmQuiet } from './util'
 import { parsePicker, checkedIndexes, type Picker } from './picker'
 import { buildKeyboard, parseCallback } from './picker-drive'
 import {
-  loadTrustedGroups, isExcludedTopic, slugFromTopicName, type TrustedGroupConfig,
+  loadTrustedGroups, isExcludedTopic, slugFromTopicName, MODE_LABEL,
+  type TrustedGroupConfig, type TrustedGroupMode,
 } from './trusted-groups'
 import { resolveModeDir } from './dir-resolve'
 import { jsonlMtimes, captureNewSessionId } from './session-id'
+import { recordChat, chatLabel } from './known-chats'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
 
@@ -649,20 +651,37 @@ async function spawnSession(
 }
 
 // new forum topic in a trusted group → auto-bind + auto-start, no /bind needed
-type PendingTopic = { cfg: TrustedGroupConfig; say: (html: string) => void; timer: ReturnType<typeof setTimeout> }
+type PendingTopic = {
+  cfg: TrustedGroupConfig
+  mode: TrustedGroupMode
+  say: (html: string) => void
+  timer: ReturnType<typeof setTimeout>
+}
 const pendingTopics = new Map<string, PendingTopic>()
+// mode picker sent, waiting for a button tap — before the branch grace window starts
+type PendingModeChoice = { cfg: TrustedGroupConfig; topicName: string; say: (html: string) => void }
+const pendingModeChoice = new Map<string, PendingModeChoice>()
 const TOPIC_GRACE_MS = 4000
+
+function startTopicGrace(key: string, cfg: TrustedGroupConfig, mode: TrustedGroupMode, topicName: string, say: (html: string) => void): void {
+  const timer = setTimeout(() => {
+    pendingTopics.delete(key)
+    void runAutoTopic(key, cfg, mode, slugFromTopicName(topicName), say)
+  }, TOPIC_GRACE_MS)
+  pendingTopics.set(key, { cfg, mode, say, timer })
+}
 
 async function runAutoTopic(
   key: string,
   cfg: TrustedGroupConfig,
+  mode: TrustedGroupMode,
   branch: string,
   say: (html: string) => void,
 ): Promise<void> {
-  const branchNote = cfg.mode === 'shared' ? '' : `, ветка <code>${escHtml(branch)}</code>`
-  say(`⏳ Готовлю сессию (<code>${escHtml(cfg.mode)}</code>${branchNote})…`)
+  const branchNote = mode === 'folder' ? '' : `, ветка <code>${escHtml(branch)}</code>`
+  say(`⏳ Готовлю сессию (<code>${escHtml(mode)}</code>${branchNote})…`)
   try {
-    const dir = await resolveModeDir(cfg, branch)
+    const dir = await resolveModeDir(mode, cfg, branch)
     const reg = loadBindings()
     reg[key] = { dir, ...(cfg.cmdline ? { cmdline: cfg.cmdline } : {}) }
     saveBindings(reg)
@@ -690,13 +709,14 @@ async function handleInbound({ ctx, text, downloadImage, attachment }: Inbound):
   const msgId = ctx.message?.message_id
   const threadId = ctx.message?.message_thread_id
   const key = messageKey({ chatType: chat.type, chatId: chat_id, threadId })
+  recordChat(chat_id, chat.type, chatLabel(chat), new Date().toISOString())
 
   // a message beat the auto-topic grace timer: it's an explicit branch name, not chat
   const pendingTopic = pendingTopics.get(key)
   if (pendingTopic) {
     clearTimeout(pendingTopic.timer)
     pendingTopics.delete(key)
-    await runAutoTopic(key, pendingTopic.cfg, text.trim(), pendingTopic.say)
+    await runAutoTopic(key, pendingTopic.cfg, pendingTopic.mode, text.trim(), pendingTopic.say)
     return
   }
 
@@ -963,6 +983,10 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
   await spawnSession(key, binding, cmd === 'resume' ? 'resume' : 'new', html => void say(html))
 }
 
+bot.on('my_chat_member', ctx => {
+  recordChat(String(ctx.chat.id), ctx.chat.type, chatLabel(ctx.chat), new Date().toISOString())
+})
+
 bot.on('message:forum_topic_created', ctx => {
   const chat_id = String(ctx.chat.id)
   const cfg = loadTrustedGroups()[chat_id]
@@ -979,11 +1003,23 @@ bot.on('message:forum_topic_created', ctx => {
     void bot.api
       .sendMessage(chat_id, html, { message_thread_id: threadId, parse_mode: 'HTML' })
       .catch(() => {})
-  const timer = setTimeout(() => {
-    pendingTopics.delete(key)
-    void runAutoTopic(key, cfg, slugFromTopicName(topicName), say)
-  }, TOPIC_GRACE_MS)
-  pendingTopics.set(key, { cfg, say, timer })
+
+  if (cfg.modes.length > 1) {
+    const kb = new InlineKeyboard()
+    for (const m of cfg.modes) {
+      kb.text(MODE_LABEL[m], `topicmode:${key}:${m}`).row()
+    }
+    pendingModeChoice.set(key, { cfg, topicName, say })
+    void bot.api
+      .sendMessage(chat_id, 'Как поднять сессию для этого топика?', {
+        message_thread_id: threadId,
+        reply_markup: kb,
+      })
+      .catch(() => {})
+    return
+  }
+
+  startTopicGrace(key, cfg, cfg.modes[0], topicName, say)
 })
 
 bot.on('message:text', async ctx => handleInbound({ ctx, text: ctx.message.text }))
@@ -1072,6 +1108,25 @@ bot.on('message:sticker', async ctx => {
 })
 
 bot.on('callback_query:data', async ctx => {
+  const tm = /^topicmode:(.+):(folder|worktree|hook)$/.exec(ctx.callbackQuery.data)
+  if (tm) {
+    const [, key, modeStr] = tm
+    const mode = modeStr as TrustedGroupMode
+    const pending = pendingModeChoice.get(key)
+    if (!pending) {
+      await ctx.answerCallbackQuery({ text: 'Уже выбрано или устарело' }).catch(() => {})
+      return
+    }
+    if (!isAdmin(String(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: 'Нет прав' }).catch(() => {})
+      return
+    }
+    pendingModeChoice.delete(key)
+    await ctx.answerCallbackQuery({ text: MODE_LABEL[mode] }).catch(() => {})
+    await ctx.editMessageText(`${MODE_LABEL[mode]} — выбрано.`).catch(() => {})
+    startTopicGrace(key, pending.cfg, mode, pending.topicName, pending.say)
+    return
+  }
   const pick = parseCallback(ctx.callbackQuery.data)
   if (pick) {
     await handlePickCallback(ctx, pick)

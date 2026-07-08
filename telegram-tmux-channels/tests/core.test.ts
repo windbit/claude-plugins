@@ -231,7 +231,7 @@ describe('tmux-ops', () => {
 
 describe('trusted-groups', () => {
   const cfg: TrustedGroupConfig = {
-    mode: 'shared',
+    modes: ['folder'],
     dir: '/x',
     exclude: { topicIds: [1, 47], nameContains: ['hermes', '🔒'] },
   }

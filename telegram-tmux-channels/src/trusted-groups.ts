@@ -6,14 +6,20 @@ import { safeJsonParse } from './util'
 
 export const TRUSTED_GROUPS_FILE = join(STATE_DIR, 'trusted-groups.json')
 
-export type TrustedGroupMode = 'shared' | 'worktree' | 'hook'
+export type TrustedGroupMode = 'folder' | 'worktree' | 'hook'
 
 export type TrustedGroupConfig = {
-  mode: TrustedGroupMode
+  modes: TrustedGroupMode[] // 1 = auto, no picker; 2+ = per-topic button choice
   dir: string
   hook?: string
   cmdline?: string[]
   exclude?: { topicIds?: number[]; nameContains?: string[] }
+}
+
+export const MODE_LABEL: Record<TrustedGroupMode, string> = {
+  folder: '📁 Folder',
+  worktree: '🌿 Worktree',
+  hook: '🪝 Hook',
 }
 
 export function loadTrustedGroups(): Record<string, TrustedGroupConfig> {
