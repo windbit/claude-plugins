@@ -358,12 +358,21 @@ function isAutoAckPrompt(picker: Picker): boolean {
   return picker.options.some(o => AUTO_ACK_MARKERS.some(m => o.label.includes(m)))
 }
 
+function resolvedText(ap: ActivePicker, answer: string): string {
+  return `🔽 ${ap.picker.title || 'Выбор'}\n${answer}`
+}
+
+async function resolvePickerMessage(ap: ActivePicker, answer: string): Promise<void> {
+  await bot.api.editMessageText(ap.chatId, ap.msgId, resolvedText(ap, answer)).catch(() => {})
+}
+
 async function detectPicker(pane: string, cwd: string, text: string): Promise<void> {
   const picker = parsePicker(text)
   const existing = activePickers.get(pane)
   if (!picker || isAutoAckPrompt(picker)) {
     if (existing) {
-      void bot.api.editMessageText(existing.chatId, existing.msgId, '▫️ picker closed').catch(() => {})
+      // closed without a TG tap (answered in the TUI) — the answer is unknown to us
+      void bot.api.editMessageText(existing.chatId, existing.msgId, resolvedText(existing, '— отвечено в TUI')).catch(() => {})
       activePickers.delete(pane)
     }
     return
@@ -429,8 +438,11 @@ async function handlePickCallback(
     return
   }
   const action = pick.action
+  const labelOf = (i: number) => ap.picker.options.find(o => o.index === i)?.label ?? String(i)
   if (action.kind === 'opt' && ap.picker.mode === 'single') {
     await sendKeys(pane, String(action.index))
+    await resolvePickerMessage(ap, `✅ ${labelOf(action.index)}`)
+    activePickers.delete(pane)
     await ctx.answerCallbackQuery({ text: 'ok' }).catch(() => {})
   } else if (action.kind === 'opt') {
     await sendKeys(pane, String(action.index)) // multi: toggle checkbox
@@ -440,8 +452,11 @@ async function handlePickCallback(
       .editMessageReplyMarkup({ reply_markup: kbFrom(ap.picker, ap.token, checkedIndexes(text)) })
       .catch(() => {})
   } else if (action.kind === 'submit') {
+    const chosen = checkedIndexes(await capturePane(pane).catch(() => '')).map(labelOf)
     await sendKeys(pane, 'Right') // → review screen
     await sendKeys(pane, '1') // Submit answers
+    await resolvePickerMessage(ap, `✅ ${chosen.join(', ') || '—'}`)
+    activePickers.delete(pane)
     await ctx.answerCallbackQuery({ text: 'submitted' }).catch(() => {})
   } else {
     if (ap.picker.customIndex != null) {
@@ -532,6 +547,11 @@ async function handleInbound({ ctx, text, downloadImage, attachment }: Inbound):
     }
     if (isAdmin(senderId) || bindingAllows(chat_id, senderId)) {
       await typeLine(pane, text)
+      const ap = activePickers.get(pane)
+      if (ap) {
+        await resolvePickerMessage(ap, `✅ ${text}`)
+        activePickers.delete(pane)
+      }
       awaitingCustom.delete(pane)
       return
     }
