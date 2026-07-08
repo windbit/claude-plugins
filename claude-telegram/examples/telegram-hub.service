@@ -1,0 +1,24 @@
+# Optional always-on hub for Linux (systemd user unit).
+# NOT required: the stub autospawns the hub itself (and autospawn always runs the
+# currently-installed plugin version). Install this only if you want the bot to
+# answer even when no claude session is running.
+#
+#   1. cp examples/telegram-hub.service ~/.config/systemd/user/
+#   2. systemctl --user daemon-reload && systemctl --user enable --now telegram-hub
+#
+# ExecStart resolves the LATEST installed plugin version at launch, so `/plugin
+# update` doesn't break the path — just `systemctl --user restart telegram-hub`
+# afterwards to pick up new code.
+[Unit]
+Description=Claude Telegram hub — single bot poller, routes topics to Claude sessions
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -c 'exec bun run "$(ls -d %h/.claude/plugins/cache/*/claude-telegram/*/src/hub.ts | sort -V | tail -1)"'
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
