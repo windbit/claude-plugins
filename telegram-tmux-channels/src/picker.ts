@@ -16,6 +16,9 @@ export type Picker = {
 }
 
 const MAX_TITLE_LINES = 3
+// A live picker's footer sits at the very bottom of the pane (it owns the input area);
+// a leftover footer higher up has the prompt box + status line below it.
+const FOOTER_TAIL_MAX = 2
 
 function optionLabel(rest: string): string {
   const noCheckbox = rest.replace(CHECKBOX_RE, '')
@@ -59,8 +62,18 @@ function fnv1a(s: string): string {
 // screen (scrollback, prior agent output with its own numbered lists) is ignored.
 export function parsePicker(text: string): Picker | undefined {
   const lines = text.split('\n')
-  const footerIdx = lines.findIndex(l => l.includes(FOOTER))
-  if (footerIdx < 0) {
+  let lastIdx = lines.length - 1
+  while (lastIdx >= 0 && !lines[lastIdx].trim()) {
+    lastIdx--
+  }
+  let footerIdx = -1
+  for (let i = lastIdx; i >= 0; i--) {
+    if (lines[i].includes(FOOTER)) {
+      footerIdx = i
+      break
+    }
+  }
+  if (footerIdx < 0 || lastIdx - footerIdx > FOOTER_TAIL_MAX) {
     return undefined
   }
   const options: PickerOption[] = []

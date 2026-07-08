@@ -34,6 +34,9 @@ describe('parsePicker', () => {
   test('обычный текст без пикера → undefined', () => {
     expect(parsePicker('just a prompt\n❯ \n')).toBeUndefined()
   })
+  test('stale footer: остаток «Esc to cancel» с промпт-боксом под ним → не пикер', () => {
+    expect(parsePicker(fx('stale-footer.txt'))).toBeUndefined()
+  })
   test('scrollback: нумерованный список ВЫШЕ пикера не попадает в опции/заголовок', () => {
     const p = parsePicker(fx('scrollback-noise.txt'))!
     expect(p.options.map(o => o.label)).toEqual(['Мигрировать', 'Откатить', 'Type something.'])
