@@ -1,6 +1,8 @@
 {
-  "name": "claude-plugins",
-  "owner": { "name": "windbit" },
+  "name": "windbit",
+  "owner": {
+    "name": "windbit"
+  },
   "plugins": [
     {
       "name": "telegram-tmux-channels",
