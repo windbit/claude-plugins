@@ -710,6 +710,16 @@ async function runAutoTopic(
   }
 }
 
+const OWN_DIR_LABEL = '✏️ Своя папка'
+
+function modeKeyboard(key: string, cfg: TrustedGroupConfig): InlineKeyboard {
+  const kb = new InlineKeyboard()
+  for (const m of cfg.modes) {
+    kb.text(MODE_LABEL[m], `topicmode:${key}:${m}`).row()
+  }
+  return kb.text(OWN_DIR_LABEL, `topicdir:${key}`).row()
+}
+
 // forum_topic_created can be missed (hub down, race) — a message in an unbound
 // topic of a trusted group is treated the same way, using the message itself
 // as the branch/slug source (the topic's real title isn't available here).
@@ -722,15 +732,11 @@ async function handleLateTopic(
   say: (html: string) => void,
 ): Promise<void> {
   if (cfg.modes.length > 1) {
-    const kb = new InlineKeyboard()
-    for (const m of cfg.modes) {
-      kb.text(MODE_LABEL[m], `topicmode:${key}:${m}`).row()
-    }
     pendingModeChoice.set(key, { cfg, topicName: firstText, say })
     void bot.api
       .sendMessage(chatId, 'Похоже, это новый топик — как поднять сессию?', {
         message_thread_id: threadId,
-        reply_markup: kb,
+        reply_markup: modeKeyboard(key, cfg),
       })
       .catch(() => {})
     return
@@ -761,6 +767,15 @@ async function handleInbound({ ctx, text, downloadImage, attachment }: Inbound):
     void bot.api
       .sendMessage(chat_id, html, { ...(threadId != null ? { message_thread_id: threadId } : {}), parse_mode: 'HTML' })
       .catch(() => {})
+
+  // explicit commands always win — never swallowed by an auto-topic prompt waiting for text
+  const ops = parseOpsCommand(text)
+  if (ops && (!ops.bot || ops.bot.toLowerCase() === botUsername.toLowerCase())) {
+    pendingTopics.delete(key)
+    pendingModeChoice.delete(key)
+    await handleOps({ cmd: ops.cmd, arg: ops.arg, key, chat_id, threadId, senderId })
+    return
+  }
 
   // a message beat the auto-topic grace timer, or answered the "which folder" prompt
   const pendingTopic = pendingTopics.get(key)
@@ -823,12 +838,6 @@ async function handleInbound({ ctx, text, downloadImage, attachment }: Inbound):
 
   // mode picker already sent for this topic — wait for the button, don't also treat text as anything else
   if (pendingModeChoice.has(key)) {
-    return
-  }
-
-  const ops = parseOpsCommand(text)
-  if (ops && (!ops.bot || ops.bot.toLowerCase() === botUsername.toLowerCase())) {
-    await handleOps({ cmd: ops.cmd, arg: ops.arg, key, chat_id, threadId, senderId })
     return
   }
 
@@ -1077,15 +1086,11 @@ bot.on('message:forum_topic_created', ctx => {
       .catch(() => {})
 
   if (cfg.modes.length > 1) {
-    const kb = new InlineKeyboard()
-    for (const m of cfg.modes) {
-      kb.text(MODE_LABEL[m], `topicmode:${key}:${m}`).row()
-    }
     pendingModeChoice.set(key, { cfg, topicName, say })
     void bot.api
       .sendMessage(chat_id, 'Как поднять сессию для этого топика?', {
         message_thread_id: threadId,
-        reply_markup: kb,
+        reply_markup: modeKeyboard(key, cfg),
       })
       .catch(() => {})
     return
@@ -1197,6 +1202,25 @@ bot.on('callback_query:data', async ctx => {
     await ctx.answerCallbackQuery({ text: MODE_LABEL[mode] }).catch(() => {})
     await ctx.editMessageText(`${MODE_LABEL[mode]} — выбрано.`).catch(() => {})
     beginDirOrBranch(key, pending.cfg, mode, pending.topicName, pending.say)
+    return
+  }
+  const td = /^topicdir:(.+)$/.exec(ctx.callbackQuery.data)
+  if (td) {
+    const [, key] = td
+    const pending = pendingModeChoice.get(key)
+    if (!pending) {
+      await ctx.answerCallbackQuery({ text: 'Уже выбрано или устарело' }).catch(() => {})
+      return
+    }
+    if (!isAdmin(String(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: 'Нет прав' }).catch(() => {})
+      return
+    }
+    pendingModeChoice.delete(key)
+    await ctx.answerCallbackQuery({ text: OWN_DIR_LABEL }).catch(() => {})
+    await ctx.editMessageText(`${OWN_DIR_LABEL} — выбрано.`).catch(() => {})
+    pending.say('📁 Пришли папку — как в <code>/bind</code>: имя в ~/projects или абсолютный путь.')
+    pendingTopics.set(key, { stage: 'need-dir', cfg: pending.cfg, mode: 'folder', topicName: pending.topicName, say: pending.say })
     return
   }
   const pick = parseCallback(ctx.callbackQuery.data)
