@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Optional always-on hub for macOS (launchd LaunchAgent).
+  NOT required: the stub autospawns the hub itself (and autospawn always runs the
+  currently-installed plugin version). Install only if you want the bot to answer
+  without any claude session running.
+
+    1. set BUN below to `which bun` (e.g. /opt/homebrew/bin/bun)
+    2. cp examples/dev.windbit.claude-telegram.plist ~/Library/LaunchAgents/
+    3. launchctl load -w ~/Library/LaunchAgents/dev.windbit.claude-telegram.plist
+
+  ExecStart resolves the LATEST installed plugin version at launch, so a plugin
+  update doesn't break the path (kickstart -k afterwards to pick up new code).
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.windbit.claude-telegram</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <!-- REPLACE /opt/homebrew/bin/bun with your `which bun`: -->
+    <string>exec /opt/homebrew/bin/bun run "$(ls -d "$HOME"/.claude/plugins/cache/*/claude-telegram/*/src/hub.ts | sort -V | tail -1)"</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+</dict>
+</plist>

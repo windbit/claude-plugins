@@ -1,0 +1,12 @@
+{
+  "name": "claude-telegram",
+  "description": "Telegram channel for Claude Code, hub-and-spoke: one bot, many sessions, topic→folder bindings via /bind from chat, tmux ops /compact,/esc,/restart,/resume,/new,/status. Fork of telegram@claude-plugins-official.",
+  "version": "2.1.0",
+  "keywords": [
+    "telegram",
+    "messaging",
+    "channel",
+    "mcp",
+    "topics"
+  ]
+}

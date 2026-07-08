@@ -1,0 +1,11 @@
+{
+  "name": "claude-plugins",
+  "owner": { "name": "windbit" },
+  "plugins": [
+    {
+      "name": "claude-telegram",
+      "source": "./claude-telegram",
+      "description": "Telegram channel for Claude Code: one bot, many Claude sessions, topic→folder bindings via /bind, tmux ops. Linux & macOS."
+    }
+  ]
+}
