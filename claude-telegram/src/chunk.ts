@@ -4,7 +4,9 @@ export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
 export const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp'])
 
 export function chunk(text: string, limit: number, mode: 'length' | 'newline'): string[] {
-  if (text.length <= limit) return [text]
+  if (text.length <= limit) {
+    return [text]
+  }
   const out: string[] = []
   let rest = text
   while (rest.length > limit) {
@@ -18,6 +20,8 @@ export function chunk(text: string, limit: number, mode: 'length' | 'newline'): 
     out.push(rest.slice(0, cut))
     rest = rest.slice(cut).replace(/^\n+/, '')
   }
-  if (rest) out.push(rest)
+  if (rest) {
+    out.push(rest)
+  }
   return out
 }

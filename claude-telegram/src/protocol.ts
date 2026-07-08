@@ -38,7 +38,9 @@ export function makeLineDecoder<T>(
     while ((i = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, i)
       buf = buf.slice(i + 1)
-      if (!line.trim()) continue
+      if (!line.trim()) {
+        continue
+      }
       try {
         onMsg(JSON.parse(line) as T)
       } catch (e) {

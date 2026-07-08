@@ -36,7 +36,9 @@ export function parentPid(pid: number): number {
 /** Process cwd, or undefined. */
 export function cwdOf(pid: number): string | undefined {
   try {
-    if (isLinux) return readlinkSync(`/proc/${pid}/cwd`)
+    if (isLinux) {
+      return readlinkSync(`/proc/${pid}/cwd`)
+    }
     // macOS: lsof -a -d cwd — "n<path>" line in -F format
     const out = Bun.spawnSync(['lsof', '-a', '-d', 'cwd', '-p', String(pid), '-Fn']).stdout.toString()
     const line = out.split('\n').find(l => l.startsWith('n'))
@@ -57,10 +59,14 @@ export function claudePids(): number[] {
     }
     const out: number[] = []
     for (const name of entries) {
-      if (!/^\d+$/.test(name)) continue
+      if (!/^\d+$/.test(name)) {
+        continue
+      }
       try {
-        if (isClaudeArgv(cmdlineOf(Number(name)))) out.push(Number(name))
-      } catch {}
+        if (isClaudeArgv(cmdlineOf(Number(name)))) {
+          out.push(Number(name))
+        }
+      } catch {} // process vanished mid-scan
     }
     return out
   }
@@ -81,19 +87,23 @@ export function claudePidsInDir(dir: string): number[] {
 }
 
 /** Walk up the process tree from the stub to the claude process. */
-export function findClaudeAncestor(startPid: number): { pid: number; cmdline: string[] } | null {
+export function findClaudeAncestor(startPid: number): { pid: number; cmdline: string[] } | undefined {
   let pid = startPid
   for (let hops = 0; hops < 10 && pid > 1; hops++) {
     let cmdline: string[]
     try {
       cmdline = cmdlineOf(pid)
     } catch {
-      return null
+      return undefined
     }
-    if (isClaudeArgv(cmdline)) return { pid, cmdline }
+    if (isClaudeArgv(cmdline)) {
+      return { pid, cmdline }
+    }
     const parent = parentPid(pid)
-    if (!parent || parent === pid) return null
+    if (!parent || parent === pid) {
+      return undefined
+    }
     pid = parent
   }
-  return null
+  return undefined
 }

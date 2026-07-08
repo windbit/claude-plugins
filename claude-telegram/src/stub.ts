@@ -25,12 +25,18 @@ const SPAWN_LOCK = join(STATE_DIR, 'hub.spawnlock')
 const AUTOSPAWN = process.env.TELEGRAM_HUB_AUTOSPAWN !== '0'
 let spawnedHub = false
 
+const SPAWN_LOCK_FRESH_MS = 15_000
+
 function maybeSpawnHub(): void {
-  if (!AUTOSPAWN || spawnedHub) return
-  // a fresh lock (<15s) means another stub is spawning the hub — wait for it
+  if (!AUTOSPAWN || spawnedHub) {
+    return
+  }
+  // a fresh lock means another stub is spawning the hub — wait for it
   try {
-    if (Date.now() - statSync(SPAWN_LOCK).mtimeMs < 15_000) return
-  } catch {}
+    if (Date.now() - statSync(SPAWN_LOCK).mtimeMs < SPAWN_LOCK_FRESH_MS) {
+      return
+    }
+  } catch {} // no lock file yet
   try {
     writeFileSync(SPAWN_LOCK, String(process.pid))
   } catch {}
@@ -64,10 +70,15 @@ const RPC_TIMEOUT_MS = 120_000
 const onHubMessage = (msg: HubToStub): void => {
   if (msg.op === 'result') {
     const p = pending.get(msg.id)
-    if (!p) return
+    if (!p) {
+      return
+    }
     pending.delete(msg.id)
-    if (msg.ok) p.resolve(msg.result ?? 'ok')
-    else p.reject(new Error(msg.error ?? 'hub error'))
+    if (msg.ok) {
+      p.resolve(msg.result ?? 'ok')
+    } else {
+      p.reject(new Error(msg.error ?? 'hub error'))
+    }
     return
   }
   if (msg.op === 'event' && msg.kind === 'message') {
@@ -96,7 +107,9 @@ function rpc(method: RpcMethod, params: Record<string, unknown>): Promise<string
     }
     pending.set(id, { resolve, reject })
     setTimeout(() => {
-      if (pending.delete(id)) reject(new Error(`hub rpc ${method} timed out`))
+      if (pending.delete(id)) {
+        reject(new Error(`hub rpc ${method} timed out`))
+      }
     }, RPC_TIMEOUT_MS).unref?.()
     try {
       sock.write(encode({ op: 'rpc', id, method, params } satisfies StubToHub))
@@ -143,7 +156,9 @@ function connectHub(): void {
 
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 function scheduleReconnect(): void {
-  if (reconnectTimer) return
+  if (reconnectTimer) {
+    return
+  }
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null
     connectHub()
@@ -298,5 +313,7 @@ setInterval(() => {
     (process.platform !== 'win32' && process.ppid !== bootPpid) ||
     process.stdin.destroyed ||
     process.stdin.readableEnded
-  if (orphaned) shutdown()
+  if (orphaned) {
+    shutdown()
+  }
 }, 5000).unref()

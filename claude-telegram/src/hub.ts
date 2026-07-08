@@ -26,6 +26,7 @@ import {
 } from './tmux-ops'
 import { claudePidsInDir } from './proc'
 import { readLimits, formatLimits } from './limits'
+import { rmQuiet } from './util'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
 
@@ -34,16 +35,20 @@ try {
   chmodSync(ENV_FILE, 0o600)
   for (const line of readFileSync(ENV_FILE, 'utf8').split('\n')) {
     const m = line.match(/^(\w+)=(.*)$/)
-    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2]
+    if (m && process.env[m[1]] === undefined) {
+      process.env[m[1]] = m[2]
+    }
   }
-} catch {}
+} catch {} // no .env file — token may come from the real env
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN
 if (!TOKEN) {
   log(`TELEGRAM_BOT_TOKEN required — set in ${ENV_FILE}`)
   process.exit(1)
 }
 const ADMINS = (process.env.TELEGRAM_ADMINS ?? '').split(',').map(s => s.trim()).filter(Boolean)
-if (ADMINS.length === 0) log(`WARNING: TELEGRAM_ADMINS is empty — nobody can bind or converse`)
+if (ADMINS.length === 0) {
+  log(`WARNING: TELEGRAM_ADMINS is empty — nobody can bind or converse`)
+}
 const isAdmin = (id: string) => ADMINS.includes(id)
 
 // base for /bind <name>; absolute paths and ~/… still work
@@ -58,11 +63,15 @@ try {
     log(`replacing stale poller pid=${stale}`)
     process.kill(stale, 'SIGTERM')
   }
-} catch {}
+} catch {} // no pid file, or the process is already gone
 writeFileSync(PID_FILE, String(process.pid))
 
 process.on('unhandledRejection', err => log(`unhandled rejection: ${err}`))
 process.on('uncaughtException', err => log(`uncaught exception: ${err}`))
+
+const SPAWN_LOCK = join(STATE_DIR, 'hub.spawnlock')
+const MAX_409_ATTEMPTS = 8
+const MAX_BACKOFF_MS = 15_000
 
 const bot = new Bot(TOKEN)
 let botUsername = ''
@@ -78,7 +87,6 @@ function send(sock: Socket<undefined>, msg: HubToStub): void {
   }
 }
 
-// permission relay: request_id → details + owning connection
 type PendingPermission = {
   conn: Socket<undefined>
   tool_name: string
@@ -90,7 +98,9 @@ const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 
 function resolvePermission(request_id: string, behavior: 'allow' | 'deny'): boolean {
   const p = pendingPermissions.get(request_id)
-  if (!p) return false
+  if (!p) {
+    return false
+  }
   pendingPermissions.delete(request_id)
   send(p.conn, { op: 'event', kind: 'permission', request_id, behavior })
   return true
@@ -187,9 +197,13 @@ async function handleRpc(
     }
     case 'download_attachment': {
       const file = await bot.api.getFile(params.file_id as string)
-      if (!file.file_path) throw new Error('Telegram returned no file_path — file may have expired')
+      if (!file.file_path) {
+        throw new Error('Telegram returned no file_path — file may have expired')
+      }
       const res = await fetch(`https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`)
-      if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`)
+      if (!res.ok) {
+        throw new Error(`download failed: HTTP ${res.status}`)
+      }
       const buf = Buffer.from(await res.arrayBuffer())
       const rawExt = file.file_path.includes('.') ? file.file_path.split('.').pop()! : 'bin'
       const ext = rawExt.replace(/[^a-zA-Z0-9]/g, '') || 'bin'
@@ -233,7 +247,7 @@ function assertSendable(f: string): void {
   }
 }
 
-try { rmSync(SOCK_PATH, { force: true }) } catch {}
+rmQuiet(SOCK_PATH)
 Bun.listen<undefined>({
   unix: SOCK_PATH,
   socket: {
@@ -249,7 +263,11 @@ Bun.listen<undefined>({
     close(sock) {
       router.unsubscribe(sock)
       feeders.delete(sock)
-      for (const [id, p] of pendingPermissions) if (p.conn === sock) pendingPermissions.delete(id)
+      for (const [id, p] of pendingPermissions) {
+        if (p.conn === sock) {
+          pendingPermissions.delete(id)
+        }
+      }
       log(`stub disconnected (${router.size()} left)`)
     },
     error(_sock, err) {
@@ -280,7 +298,9 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
 
 // a live session's argv is remembered in its bindings — /resume relaunches with the same flags
 function learnCmdline(session: SessionInfo): void {
-  if (!session.cwd || !session.cmdline?.length) return
+  if (!session.cwd || !session.cmdline?.length) {
+    return
+  }
   const reg = loadBindings()
   let changed = false
   for (const k of keysForDir(reg, session.cwd)) {
@@ -289,7 +309,9 @@ function learnCmdline(session: SessionInfo): void {
       changed = true
     }
   }
-  if (changed) saveBindings(reg)
+  if (changed) {
+    saveBindings(reg)
+  }
 }
 
 type AttachmentMeta = { kind: string; file_id: string; size?: number; mime?: string; name?: string }
@@ -306,7 +328,9 @@ async function handleInbound(
 ): Promise<void> {
   const from = ctx.from
   const chat = ctx.chat
-  if (!from || !chat) return
+  if (!from || !chat) {
+    return
+  }
   const senderId = String(from.id)
   const chat_id = String(chat.id)
   const msgId = ctx.message?.message_id
@@ -378,7 +402,9 @@ async function handleInbound(
         }
       : {}),
   }
-  for (const conn of conns) send(conn, { op: 'event', kind: 'message', content: text, meta })
+  for (const conn of conns) {
+    send(conn, { op: 'event', kind: 'message', content: text, meta })
+  }
 }
 
 // bind/unbind/allow — admins only; everything else — admins and the binding's allow users
@@ -399,7 +425,9 @@ async function handleOps(
   const binding: BindingEntry | undefined = reg[key]
 
   if (cmd === 'bind' || cmd === 'unbind' || cmd === 'allow') {
-    if (!isAdmin(senderId)) return
+    if (!isAdmin(senderId)) {
+      return
+    }
     if (cmd === 'bind') {
       if (!arg) {
         void say(`usage: /bind <folder under ${PROJECTS_DIR} or absolute path>`)
@@ -445,7 +473,9 @@ async function handleOps(
     return
   }
 
-  if (!isAdmin(senderId) && !binding?.allow?.includes(senderId)) return
+  if (!isAdmin(senderId) && !binding?.allow?.includes(senderId)) {
+    return
+  }
 
   const live = binding ? router.byDir(binding.dir) : []
   const session = live.length > 0 ? router.get(live[0]) : undefined
@@ -468,8 +498,12 @@ async function handleOps(
       lines.push('→ /resume to bring it up')
     }
     const limits = readLimits(binding.dir)
-    if (limits) lines.push(...formatLimits(limits, Date.now()))
-    if (binding.allow?.length) lines.push(`allow: [${binding.allow.join(', ')}]`)
+    if (limits) {
+      lines.push(...formatLimits(limits, Date.now()))
+    }
+    if (binding.allow?.length) {
+    lines.push(`allow: [${binding.allow.join(', ')}]`)
+  }
     void say(lines.join('\n'))
     return
   }
@@ -557,7 +591,9 @@ bot.on('message:photo', async ctx => {
     const best = photos[photos.length - 1]
     try {
       const file = await ctx.api.getFile(best.file_id)
-      if (!file.file_path) return undefined
+      if (!file.file_path) {
+        return undefined
+      }
       const res = await fetch(`https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`)
       const buf = Buffer.from(await res.arrayBuffer())
       const ext = file.file_path.split('.').pop() ?? 'jpg'
@@ -666,14 +702,18 @@ bot.catch(err => log(`handler error (polling continues): ${err.error}`))
 
 let shuttingDown = false
 function shutdown(): void {
-  if (shuttingDown) return
+  if (shuttingDown) {
+    return
+  }
   shuttingDown = true
   log('shutting down')
   try {
-    if (parseInt(readFileSync(PID_FILE, 'utf8'), 10) === process.pid) rmSync(PID_FILE)
+    if (parseInt(readFileSync(PID_FILE, 'utf8'), 10) === process.pid) {
+      rmSync(PID_FILE)
+    }
   } catch {}
-  try { rmSync(SOCK_PATH, { force: true }) } catch {}
-  try { rmSync(join(STATE_DIR, 'hub.spawnlock'), { force: true }) } catch {}
+  rmQuiet(SOCK_PATH)
+  rmQuiet(SPAWN_LOCK)
   setTimeout(() => process.exit(0), 2000)
   void Promise.resolve(bot.stop()).finally(() => process.exit(0))
 }
@@ -687,7 +727,7 @@ void (async () => {
         onStart: info => {
           attempt = 0
           botUsername = info.username
-          try { rmSync(join(STATE_DIR, 'hub.spawnlock'), { force: true }) } catch {}
+          rmQuiet(SPAWN_LOCK)
           log(`polling as @${info.username}`)
           void bot.api.setMyCommands([
             { command: 'status', description: 'Session status (dir/tmux/claude)' },
@@ -704,14 +744,18 @@ void (async () => {
       })
       return
     } catch (err) {
-      if (shuttingDown) return
-      if (err instanceof Error && err.message === 'Aborted delay') return
+      if (shuttingDown) {
+        return
+      }
+      if (err instanceof Error && err.message === 'Aborted delay') {
+        return
+      }
       const is409 = err instanceof GrammyError && err.error_code === 409
-      if (is409 && attempt >= 8) {
+      if (is409 && attempt >= MAX_409_ATTEMPTS) {
         log(`409 Conflict persists after ${attempt} attempts — another poller holds the token. Exiting.`)
         process.exit(1)
       }
-      const delay = Math.min(1000 * attempt, 15000)
+      const delay = Math.min(1000 * attempt, MAX_BACKOFF_MS)
       log(`${is409 ? '409 Conflict' : `polling error: ${err}`}, retrying in ${delay / 1000}s`)
       await new Promise(r => setTimeout(r, delay))
     }

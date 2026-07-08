@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync, renameSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { STATE_DIR } from './paths'
+import { safeJsonParse } from './util'
 
 export const BINDINGS_FILE = join(STATE_DIR, 'bindings.json')
 
@@ -14,11 +15,13 @@ export type BindingEntry = {
 }
 
 export function loadBindings(): Record<string, BindingEntry> {
+  let raw: string
   try {
-    return JSON.parse(readFileSync(BINDINGS_FILE, 'utf8'))
+    raw = readFileSync(BINDINGS_FILE, 'utf8')
   } catch {
-    return {}
+    return {} // no bindings file yet
   }
+  return safeJsonParse<Record<string, BindingEntry>>(raw) ?? {}
 }
 
 export function saveBindings(reg: Record<string, BindingEntry>): void {

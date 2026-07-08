@@ -7,11 +7,13 @@ export type OpsCommand =
 
 export function parseOpsCommand(
   text: string,
-): { cmd: OpsCommand; bot?: string; arg?: string } | null {
+): { cmd: OpsCommand; bot?: string; arg?: string } | undefined {
   const m = /^\/(compact|esc|restart|resume|new|status|bind|unbind|allow)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
     text.trim(),
   )
-  if (!m) return null
+  if (!m) {
+    return undefined
+  }
   return {
     cmd: m[1] as OpsCommand,
     ...(m[2] ? { bot: m[2] } : {}),
@@ -50,7 +52,9 @@ export function relaunchCommand(cmdline: string[]): string {
     args.push(a)
   }
   const out = ensureChannelFlags(args)
-  if (!resumable) out.push('--continue')
+  if (!resumable) {
+    out.push('--continue')
+  }
   return shellQuote(out)
 }
 
@@ -58,9 +62,13 @@ export function stripResumeFlags(argv: string[]): string[] {
   const out: string[] = []
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
-    if (a === '--continue' || a.startsWith('--resume=')) continue
+    if (a === '--continue' || a.startsWith('--resume=')) {
+      continue
+    }
     if (a === '--resume') {
-      if (i + 1 < argv.length && !argv[i + 1].startsWith('-')) i++
+      if (i + 1 < argv.length && !argv[i + 1].startsWith('-')) {
+        i++
+      }
       continue
     }
     out.push(a)
@@ -84,7 +92,9 @@ export function stripChannelFlags(argv: string[]): string[] {
   const out: string[] = []
   for (let i = 0; i < argv.length; i++) {
     if (CHANNEL_FLAGS.has(argv[i])) {
-      while (i + 1 < argv.length && !argv[i + 1].startsWith('-')) i++
+      while (i + 1 < argv.length && !argv[i + 1].startsWith('-')) {
+        i++
+      }
       continue
     }
     out.push(argv[i])
@@ -132,7 +142,9 @@ export async function hasTmuxSession(name: string): Promise<boolean> {
 }
 
 export async function ensureTmuxSession(name: string, dir: string): Promise<boolean> {
-  if (await hasTmuxSession(name)) return false
+  if (await hasTmuxSession(name)) {
+    return false
+  }
   await tmux('new-session', '-d', '-s', name, '-c', dir)
   await sleep(700) // let the shell come up before send-keys
   return true
@@ -188,7 +200,9 @@ export async function restartSession(
 ): Promise<void> {
   log(`restart: pane=${pane} pid=${pid}`)
   await typeLine(pane, '/exit')
-  for (let i = 0; i < 35 && alive(pid); i++) await sleep(2000)
+  for (let i = 0; i < 35 && alive(pid); i++) {
+    await sleep(2000)
+  }
   if (alive(pid)) {
     log('restart: still alive → Ctrl-C ×2')
     await sendKeys(pane, 'C-c')

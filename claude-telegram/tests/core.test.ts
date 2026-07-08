@@ -140,8 +140,8 @@ describe('tmux-ops', () => {
     })
     expect(parseOpsCommand('/allow 123 456')).toEqual({ cmd: 'allow', arg: '123 456' })
     expect(parseOpsCommand('/status')).toEqual({ cmd: 'status' })
-    expect(parseOpsCommand('compact')).toBeNull()
-    expect(parseOpsCommand('/unknown x')).toBeNull()
+    expect(parseOpsCommand('compact')).toBeUndefined()
+    expect(parseOpsCommand('/unknown x')).toBeUndefined()
   })
   test('shellQuote: quotes only where needed', () => {
     expect(shellQuote(["it's"])).toBe(`'it'\\''s'`)

@@ -18,7 +18,11 @@ export class Router<C> {
 
   byDir(dir: string): C[] {
     const out: C[] = []
-    for (const [conn, s] of this.subs) if (s.cwd === dir) out.push(conn)
+    for (const [conn, s] of this.subs) {
+      if (s.cwd === dir) {
+        out.push(conn)
+      }
+    }
     return out
   }
 
