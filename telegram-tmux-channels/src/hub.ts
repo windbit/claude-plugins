@@ -461,9 +461,11 @@ async function handlePickCallback(
     activePickers.delete(pane)
     await ctx.answerCallbackQuery({ text: 'submitted' }).catch(() => {})
   } else {
+    // "Type something" is an inline-editable option: the digit navigates to it and
+    // makes it editable; the user's text is typed straight in (no Enter yet — that
+    // would decline). typeLine below fills the field and submits with Enter.
     if (ap.picker.customIndex != null) {
       await sendKeys(pane, String(ap.picker.customIndex))
-      await sendKeys(pane, 'Enter')
     }
     awaitingCustom.set(pane, {
       chatId: ap.chatId,
