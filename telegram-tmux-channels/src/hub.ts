@@ -134,8 +134,11 @@ function resolvePermission(request_id: string, behavior: 'allow' | 'deny'): bool
 
 // a session's outbound is limited to the chats of its own keys
 function ownKeys(conn: Socket<undefined>): string[] {
-  const cwd = router.get(conn)?.cwd
-  return cwd ? keysForDir(loadBindings(), cwd) : []
+  const s = router.get(conn)
+  if (s?.bindingKeys?.length) {
+    return s.bindingKeys
+  }
+  return s?.cwd ? keysForDir(loadBindings(), s.cwd) : []
 }
 
 async function handleRpc(
@@ -346,8 +349,8 @@ function bindingAllows(chatId: string, senderId: string): boolean {
   return false
 }
 
-function pickerChatFor(dir: string): { chatId: string; threadId?: number } | undefined {
-  const key = keysForDir(loadBindings(), dir)[0]
+function pickerChatFor(session: SessionInfo): { chatId: string; threadId?: number } | undefined {
+  const key = session.bindingKeys?.[0] ?? (session.cwd ? keysForDir(loadBindings(), session.cwd)[0] : undefined)
   if (!key) {
     return undefined
   }
@@ -397,7 +400,7 @@ async function resolvePickerMessage(ap: ActivePicker, answer: string): Promise<v
     .catch(() => {})
 }
 
-async function detectPicker(pane: string, cwd: string, text: string): Promise<void> {
+async function detectPicker(pane: string, session: SessionInfo, text: string): Promise<void> {
   const picker = parsePicker(text)
   const existing = activePickers.get(pane)
   if (!picker || isAutoAckPrompt(picker)) {
@@ -411,7 +414,7 @@ async function detectPicker(pane: string, cwd: string, text: string): Promise<vo
   if (existing && existing.hash === picker.hash) {
     return
   }
-  const target = pickerChatFor(cwd)
+  const target = pickerChatFor(session)
   if (!target) {
     return
   }
@@ -445,7 +448,7 @@ async function pollScreens(): Promise<void> {
     }
     seen.add(s.pane)
     const text = await capturePane(s.pane).catch(() => '')
-    await detectPicker(s.pane, s.cwd, text)
+    await detectPicker(s.pane, s, text)
   }
   for (const pane of [...activePickers.keys()]) {
     if (!seen.has(pane)) {
@@ -541,7 +544,8 @@ function learnCmdline(session: SessionInfo): void {
   }
   const reg = loadBindings()
   let changed = false
-  for (const k of keysForDir(reg, session.cwd)) {
+  const keys = session.bindingKeys?.length ? session.bindingKeys : keysForDir(reg, session.cwd)
+  for (const k of keys) {
     if (JSON.stringify(reg[k].cmdline) !== JSON.stringify(session.cmdline)) {
       reg[k].cmdline = session.cmdline
       changed = true
@@ -556,6 +560,28 @@ type AttachmentMeta = { kind: string; file_id: string; size?: number; mime?: str
 
 function safeName(s: string | undefined): string | undefined {
   return s?.replace(/[<>\[\]\r\n;]/g, '_')
+}
+
+// per-binding session lookup, falls back to dir (sessions from before bindingKeys existed)
+function connsForBinding(key: string, dir: string): Socket<undefined>[] {
+  const byKey = router.byBindingKey(key)
+  return byKey.length > 0 ? byKey : router.byDir(dir)
+}
+
+// dir alone collides when several bindings share it (mode: shared) — tmux session is per-binding
+function sessionName(key: string, dir: string): string {
+  return `${basename(dir)}--${key.replace(/[^\w.-]/g, '-')}`
+}
+
+function trackedPids(): Set<number> {
+  const out = new Set<number>()
+  for (const conn of router.all()) {
+    const pid = router.get(conn)?.pid
+    if (pid) {
+      out.add(pid)
+    }
+  }
+  return out
 }
 
 type Inbound = {
@@ -630,7 +656,7 @@ async function handleInbound({ ctx, text, downloadImage, attachment }: Inbound):
     log(`drop (not allowed): key=${key} from=${senderId}`)
     return
   }
-  const conns = router.byDir(binding.dir)
+  const conns = connsForBinding(key, binding.dir)
   if (conns.length === 0) {
     log(`drop (no live session for ${binding.dir}): key=${key} — /resume to bring it up`)
     return
@@ -740,7 +766,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
     return
   }
 
-  const live = binding ? router.byDir(binding.dir) : []
+  const live = binding ? connsForBinding(key, binding.dir) : []
   const session = live.length > 0 ? router.get(live[0]) : undefined
 
   if (cmd === 'status') {
@@ -756,7 +782,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
       lines.push(`🟢 claude: подключён, ${pidState}`, `🪟 tmux: ${session.pane ? `<code>${escHtml(session.pane)}</code>` : '<i>не в tmux</i>'}`)
     } else {
       lines.push('⚪️ claude: не подключён')
-      const name = basename(binding.dir)
+      const name = sessionName(key, binding.dir)
       const tmuxState = (await hasTmuxSession(name)) ? 'есть' : 'нет сессии'
       lines.push(`🪟 tmux <code>${escHtml(name)}</code>: ${tmuxState}`, '', '→ <code>/resume</code> чтобы поднять')
     }
@@ -821,7 +847,9 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
   }
   // A foreign claude in this dir (no channels, invisible to the hub): /resume=--continue
   // would fork its conversation as a duplicate. Don't spawn — ask the operator to sort it out.
-  const foreign = claudePidsInDir(binding.dir)
+  // Siblings we already track (mode: shared, other topics in this dir) don't count as foreign.
+  const tracked = trackedPids()
+  const foreign = claudePidsInDir(binding.dir).filter(pid => !tracked.has(pid))
   if (foreign.length > 0) {
     void say(
       `⚠️ <b>В этой папке уже работает claude</b> <i>(pid ${foreign.join(', ')})</i>, но без каналов — ` +
@@ -830,7 +858,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
     )
     return
   }
-  const name = basename(binding.dir)
+  const name = sessionName(key, binding.dir)
   try {
     const created = await ensureTmuxSession(name, binding.dir)
     const launch = buildLaunch(binding.cmdline, cmd === 'resume' ? 'resume' : 'new')
@@ -839,7 +867,8 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
     } else {
       void say(`🪟 tmux <code>${escHtml(name)}</code> уже есть — набираю запуск в его активный pane.`)
     }
-    await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${launch}`)
+    const envPrefix = `TELEGRAM_BINDING_KEYS=${shellQuote([key])}`
+    await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${envPrefix} ${launch}`)
     void say(`🚀 <b>${cmd === 'resume' ? 'Возобновляю' : 'Запускаю заново'}</b>\n<code>${escHtml(launch)}</code>`)
     void ackStartupPrompts(`=${name}:`, log)
   } catch (e) {

@@ -87,6 +87,15 @@ describe('router', () => {
     r.unsubscribe('A')
     expect(r.byDir('/a')).toEqual(['C'])
   })
+  test('byBindingKey: disambiguates sessions sharing a dir', () => {
+    const r = new Router<string>()
+    r.subscribe('A', { cwd: '/shared', bindingKeys: ['-1/2'] })
+    r.subscribe('B', { cwd: '/shared', bindingKeys: ['-1/3'] })
+    expect(r.byDir('/shared').sort()).toEqual(['A', 'B'])
+    expect(r.byBindingKey('-1/2')).toEqual(['A'])
+    expect(r.byBindingKey('-1/3')).toEqual(['B'])
+    expect(r.byBindingKey('-1/4')).toEqual([])
+  })
 })
 
 describe('limits', () => {

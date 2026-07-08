@@ -5,6 +5,7 @@ export type SessionInfo = {
   pid?: number
   cmdline?: string[]
   cwd?: string
+  bindingKeys?: string[] // from TELEGRAM_BINDING_KEYS env, set by the hub at launch
 }
 
 export type RpcMethod =

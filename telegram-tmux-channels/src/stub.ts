@@ -55,10 +55,12 @@ const session: SessionInfo = (() => {
   const pane = process.env.TMUX_PANE
   const claude = findClaudeAncestor(process.pid)
   const cwd = (claude ? cwdOf(claude.pid) : undefined) ?? process.cwd()
+  const bindingKeys = process.env.TELEGRAM_BINDING_KEYS?.split(',').map(s => s.trim()).filter(Boolean)
   return {
     ...(pane ? { pane } : {}),
     ...(claude ? { pid: claude.pid, cmdline: claude.cmdline } : {}),
     cwd,
+    ...(bindingKeys?.length ? { bindingKeys } : {}),
   }
 })()
 

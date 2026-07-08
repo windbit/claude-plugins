@@ -30,6 +30,16 @@ export class Router<C> {
     return out
   }
 
+  byBindingKey(key: string): C[] {
+    const out: C[] = []
+    for (const [conn, s] of this.subs) {
+      if (s.bindingKeys?.includes(key)) {
+        out.push(conn)
+      }
+    }
+    return out
+  }
+
   size(): number {
     return this.subs.size
   }
