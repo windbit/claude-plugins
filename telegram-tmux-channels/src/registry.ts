@@ -12,6 +12,7 @@ export type BindingEntry = {
   dir: string
   allow?: string[]
   cmdline?: string[]
+  sessionId?: string // claude conversation id — --resume target when this binding's dir is shared
 }
 
 export function loadBindings(): Record<string, BindingEntry> {

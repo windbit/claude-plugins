@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, mkdirSync } from 'fs'
-import { tmpdir } from 'os'
+import { tmpdir, homedir } from 'os'
 import { join } from 'path'
 import { messageKey, keyToTarget, targetFor } from '../src/bindings'
 import { keysForDir, resolveProjectDir, type BindingEntry } from '../src/registry'
@@ -14,6 +14,7 @@ import {
 } from '../src/tmux-ops'
 import { isClaudeArgv, claudePidsInDir, cmdlineOf, findClaudeAncestor } from '../src/proc'
 import { isExcludedTopic, slugFromTopicName, type TrustedGroupConfig } from '../src/trusted-groups'
+import { claudeProjectDir } from '../src/session-id'
 
 describe('bindings', () => {
   test('messageKey: dm / topic / group', () => {
@@ -178,6 +179,14 @@ describe('tmux-ops', () => {
     expect(buildLaunch(undefined, 'new')).toBe(withChannel)
     expect(buildLaunch([...DEFAULT_CLAUDE_ARGV], 'new')).toBe(withChannel)
   })
+  test('buildLaunch: explicit sessionId → --resume <id>, not --continue', () => {
+    expect(buildLaunch(['claude'], 'resume', 'abc-123')).toBe(
+      'claude --dangerously-load-development-channels server:telegram --resume abc-123',
+    )
+    expect(buildLaunch(['claude'], 'resume')).toBe(
+      'claude --dangerously-load-development-channels server:telegram --continue',
+    )
+  })
   test('relaunchCommand: bare --resume → --continue; --resume <id> kept', () => {
     expect(relaunchCommand(['claude', '--resume'])).toBe(
       'claude --dangerously-load-development-channels server:telegram --continue',
@@ -237,5 +246,13 @@ describe('trusted-groups', () => {
     expect(slugFromTopicName('Fix login bug!')).toBe('Fix-login-bug')
     expect(slugFromTopicName('  spaced  ')).toBe('spaced')
     expect(slugFromTopicName('!!!')).toBe('topic')
+  })
+})
+
+describe('session-id', () => {
+  test('claudeProjectDir: sanitizes cwd into the slug Claude Code itself uses', () => {
+    expect(claudeProjectDir('/home/user/projects/agentek-console')).toBe(
+      join(homedir(), '.claude', 'projects', '-home-user-projects-agentek-console'),
+    )
   })
 })

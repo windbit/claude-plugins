@@ -33,6 +33,7 @@ import {
   loadTrustedGroups, isExcludedTopic, slugFromTopicName, type TrustedGroupConfig,
 } from './trusted-groups'
 import { resolveModeDir } from './dir-resolve'
+import { jsonlMtimes, captureNewSessionId } from './session-id'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
 
@@ -572,6 +573,19 @@ function connsForBinding(key: string, dir: string): Socket<undefined>[] {
   return byKey.length > 0 ? byKey : router.byDir(dir)
 }
 
+async function waitForBinding(key: string, timeoutMs: number): Promise<Socket<undefined>[]> {
+  const dir = loadBindings()[key]?.dir
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const conns = dir ? connsForBinding(key, dir) : router.byBindingKey(key)
+    if (conns.length > 0) {
+      return conns
+    }
+    await new Promise(r => setTimeout(r, 1000))
+  }
+  return []
+}
+
 // dir alone collides when several bindings share it (mode: shared) — tmux session is per-binding
 function sessionName(key: string, dir: string): string {
   return `${basename(dir)}--${key.replace(/[^\w.-]/g, '-')}`
@@ -602,9 +616,11 @@ async function spawnSession(
   say: (html: string) => void,
 ): Promise<void> {
   const name = sessionName(key, binding.dir)
+  const fresh = mode === 'new' || !binding.sessionId
+  const before = fresh ? jsonlMtimes(binding.dir) : new Map<string, number>()
   try {
     const created = await ensureTmuxSession(name, binding.dir)
-    const launch = buildLaunch(binding.cmdline, mode)
+    const launch = buildLaunch(binding.cmdline, mode, binding.sessionId)
     say(
       created
         ? `🪟 tmux <code>${escHtml(name)}</code> создан в ${codePath(binding.dir)}.`
@@ -614,6 +630,19 @@ async function spawnSession(
     await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${envPrefix} ${launch}`)
     say(`🚀 <b>${mode === 'resume' ? 'Возобновляю' : 'Запускаю заново'}</b>\n<code>${escHtml(launch)}</code>`)
     void ackStartupPrompts(`=${name}:`, log)
+    if (fresh) {
+      void captureNewSessionId(binding.dir, before, 60_000).then(id => {
+        if (!id) {
+          return
+        }
+        const reg = loadBindings()
+        if (reg[key]) {
+          reg[key].sessionId = id
+          saveBindings(reg)
+          log(`learned sessionId for ${key}: ${id}`)
+        }
+      })
+    }
   } catch (e) {
     say(`⚠️ <b>${mode} не удалось</b>: ${escHtml(String(e))}`)
   }
@@ -724,10 +753,19 @@ async function handleInbound({ ctx, text, downloadImage, attachment }: Inbound):
     log(`drop (not allowed): key=${key} from=${senderId}`)
     return
   }
-  const conns = connsForBinding(key, binding.dir)
+  let conns = connsForBinding(key, binding.dir)
+  const say = (html: string) =>
+    void bot.api
+      .sendMessage(chat_id, html, { ...(threadId != null ? { message_thread_id: threadId } : {}), parse_mode: 'HTML' })
+      .catch(() => {})
   if (conns.length === 0) {
-    log(`drop (no live session for ${binding.dir}): key=${key} — /resume to bring it up`)
-    return
+    log(`reviving: key=${key} dir=${binding.dir} — no live session for an inbound message`)
+    await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', say)
+    conns = await waitForBinding(key, 30_000)
+    if (conns.length === 0) {
+      say('⚠️ Сессия не подключилась вовремя — сообщение не доставлено, попробуй ещё раз.')
+      return
+    }
   }
 
   log(`deliver: ${key} → ${binding.dir} (${conns.length} session${conns.length > 1 ? 's' : ''})`)

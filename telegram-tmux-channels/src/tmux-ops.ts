@@ -110,9 +110,12 @@ export function ensureChannelFlags(argv: string[]): string[] {
   return [...stripChannelFlags(argv), '--dangerously-load-development-channels', 'server:telegram']
 }
 
-export function buildLaunch(saved: string[] | undefined, mode: 'resume' | 'new'): string {
+export function buildLaunch(saved: string[] | undefined, mode: 'resume' | 'new', sessionId?: string): string {
   const base = ensureChannelFlags(stripResumeFlags(saved?.length ? saved : DEFAULT_CLAUDE_ARGV))
-  return shellQuote(mode === 'resume' ? [...base, '--continue'] : base)
+  if (mode !== 'resume') {
+    return shellQuote(base)
+  }
+  return shellQuote(sessionId ? [...base, '--resume', sessionId] : [...base, '--continue'])
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
