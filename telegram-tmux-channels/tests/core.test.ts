@@ -93,10 +93,10 @@ describe('limits', () => {
   test('fmtUntil: m / h / d', () => {
     const now = 1_000_000_000_000
     const at = (secs: number) => Math.floor(now / 1000) + secs
-    expect(fmtUntil(at(45 * 60), now)).toBe('45m')
-    expect(fmtUntil(at(2 * 3600 + 47 * 60), now)).toBe('2h47m')
-    expect(fmtUntil(at(3 * 86400 + 4 * 3600), now)).toBe('3d4h')
-    expect(fmtUntil(at(-5), now)).toBe('0m')
+    expect(fmtUntil(at(45 * 60), now)).toBe('45м')
+    expect(fmtUntil(at(2 * 3600 + 47 * 60), now)).toBe('2ч47м')
+    expect(fmtUntil(at(3 * 86400 + 4 * 3600), now)).toBe('3д4ч')
+    expect(fmtUntil(at(-5), now)).toBe('0м')
   })
   test('formatLimits: line + stale marker', () => {
     const now = 1_000_000_000_000
@@ -110,10 +110,10 @@ describe('limits', () => {
     }
     const lines = formatLimits(l, now)
     expect(lines).toEqual([
-      'context 34%',
-      '5h 43%, resets 2h30m',
-      '7d 30%, resets 1d0h',
-      '(data 10m old)',
+      'контекст 34%',
+      '5ч 43%, сброс 2ч30м',
+      '7д 30%, сброс 1д0ч',
+      '(данные 10м назад)',
     ])
     expect(formatLimits({ ageMs: 0 }, now)).toEqual([])
   })

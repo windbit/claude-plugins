@@ -47,12 +47,12 @@ export function fmtDuration(secs: number): string {
   const h = Math.floor((secs % 86400) / 3600)
   const m = Math.floor((secs % 3600) / 60)
   if (d > 0) {
-    return `${d}d${h}h`
+    return `${d}д${h}ч`
   }
   if (h > 0) {
-    return `${h}h${String(m).padStart(2, '0')}m`
+    return `${h}ч${String(m).padStart(2, '0')}м`
   }
-  return `${m}m`
+  return `${m}м`
 }
 
 export function fmtUntil(resetsAtSec: number, nowMs: number): string {
@@ -62,21 +62,21 @@ export function fmtUntil(resetsAtSec: number, nowMs: number): string {
 export function formatLimits(l: Limits, nowMs: number): string[] {
   const lines: string[] = []
   if (l.contextPct != null) {
-    lines.push(`context ${l.contextPct}%`)
+    lines.push(`контекст ${l.contextPct}%`)
   }
   if (l.fiveHourPct != null) {
-    const reset = l.fiveHourResetsAt != null ? `, resets ${fmtUntil(l.fiveHourResetsAt, nowMs)}` : ''
-    lines.push(`5h ${l.fiveHourPct}%${reset}`)
+    const reset = l.fiveHourResetsAt != null ? `, сброс ${fmtUntil(l.fiveHourResetsAt, nowMs)}` : ''
+    lines.push(`5ч ${l.fiveHourPct}%${reset}`)
   }
   if (l.sevenDayPct != null) {
-    const reset = l.sevenDayResetsAt != null ? `, resets ${fmtUntil(l.sevenDayResetsAt, nowMs)}` : ''
-    lines.push(`7d ${l.sevenDayPct}%${reset}`)
+    const reset = l.sevenDayResetsAt != null ? `, сброс ${fmtUntil(l.sevenDayResetsAt, nowMs)}` : ''
+    lines.push(`7д ${l.sevenDayPct}%${reset}`)
   }
   if (lines.length === 0) {
     return []
   }
   if (l.ageMs > STALE_LIMITS_MS) {
-    lines.push(`(data ${fmtDuration(Math.floor(l.ageMs / 1000))} old)`)
+    lines.push(`(данные ${fmtDuration(Math.floor(l.ageMs / 1000))} назад)`)
   }
   return lines
 }
