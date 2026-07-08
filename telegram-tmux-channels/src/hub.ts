@@ -36,6 +36,17 @@ function escHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+// Shorten a $HOME-relative path to ~/… for display.
+const HOME = homedir()
+function tildePath(p: string): string {
+  return p === HOME ? '~' : p.startsWith(HOME + '/') ? '~' + p.slice(HOME.length) : p
+}
+
+// HTML <code> with a home-shortened, escaped path.
+function codePath(p: string): string {
+  return `<code>${escHtml(tildePath(p))}</code>`
+}
+
 // token and admins from state .env; the real env wins
 try {
   chmodSync(ENV_FILE, 0o600)
@@ -246,12 +257,12 @@ function doPermissionRequest(conn: Socket<undefined>, params: Record<string, unk
   const { request_id, tool_name, description, input_preview } = params as Record<string, string>
   pendingPermissions.set(request_id, { conn, tool_name, description, input_preview })
   const keyboard = new InlineKeyboard()
-    .text('See more', `perm:more:${request_id}`)
-    .text('✅ Allow', `perm:allow:${request_id}`)
-    .text('❌ Deny', `perm:deny:${request_id}`)
+    .text('Подробнее', `perm:more:${request_id}`)
+    .text('✅ Разрешить', `perm:allow:${request_id}`)
+    .text('❌ Отклонить', `perm:deny:${request_id}`)
   for (const chat_id of ADMINS) {
     void bot.api
-      .sendMessage(chat_id, `🔐 <b>Permission requested</b>\n<code>${escHtml(tool_name)}</code>`, {
+      .sendMessage(chat_id, `🔐 <b>Запрос разрешения</b>\n<code>${escHtml(tool_name)}</code>`, {
         parse_mode: 'HTML',
         reply_markup: keyboard,
       })
@@ -366,7 +377,7 @@ function isAutoAckPrompt(picker: Picker): boolean {
 }
 
 function pickerTitleHtml(ap: ActivePicker): string {
-  return `❓ <b>${escHtml(ap.picker.title || 'Question')}</b>`
+  return `❓ <b>${escHtml(ap.picker.title || 'Вопрос')}</b>`
 }
 
 function resolvedText(ap: ActivePicker, answer: string): string {
@@ -385,7 +396,7 @@ async function detectPicker(pane: string, cwd: string, text: string): Promise<vo
   if (!picker || isAutoAckPrompt(picker)) {
     if (existing) {
       // closed without a TG tap (answered in the TUI) — the answer is unknown to us
-      void resolvePickerMessage(existing, '<i>answered in the terminal</i>')
+      void resolvePickerMessage(existing, '<i>отвечено в терминале</i>')
       activePickers.delete(pane)
     }
     return
@@ -444,12 +455,12 @@ async function handlePickCallback(
   const pane = paneByToken(pick.token)
   const ap = pane ? activePickers.get(pane) : undefined
   if (!pane || !ap) {
-    await ctx.answerCallbackQuery({ text: 'Picker closed' }).catch(() => {})
+    await ctx.answerCallbackQuery({ text: 'Пикер закрыт' }).catch(() => {})
     return
   }
   const senderId = String(ctx.from!.id)
   if (!isAdmin(senderId) && !bindingAllows(ap.chatId, senderId)) {
-    await ctx.answerCallbackQuery({ text: 'Not allowed' }).catch(() => {})
+    await ctx.answerCallbackQuery({ text: 'Нет доступа' }).catch(() => {})
     return
   }
   const action = pick.action
@@ -459,7 +470,7 @@ async function handlePickCallback(
     await sendKeys(pane, String(action.index))
     await resolvePickerMessage(ap, `✅ <b>${escHtml(labelOf(action.index))}</b>`)
     activePickers.delete(pane)
-    await ctx.answerCallbackQuery({ text: 'Selected' }).catch(() => {})
+    await ctx.answerCallbackQuery({ text: 'Выбрано' }).catch(() => {})
   } else if (action.kind === 'opt') {
     await sendKeys(pane, String(action.index)) // multi: toggle checkbox
     await ctx.answerCallbackQuery().catch(() => {})
@@ -473,7 +484,7 @@ async function handlePickCallback(
     await sendKeys(pane, '1') // Submit answers
     await resolvePickerMessage(ap, `✅ <b>${chosen.length ? escHtml(chosen.join(', ')) : '—'}</b>`)
     activePickers.delete(pane)
-    await ctx.answerCallbackQuery({ text: 'Submitted' }).catch(() => {})
+    await ctx.answerCallbackQuery({ text: 'Отправлено' }).catch(() => {})
   } else {
     // "Type something" is an inline-editable option: the digit navigates to it and
     // makes it editable; the user's text is typed straight in (no Enter yet — that
@@ -486,9 +497,9 @@ async function handlePickCallback(
       ...(ap.threadId != null ? { threadId: ap.threadId } : {}),
       at: Date.now(),
     })
-    await ctx.answerCallbackQuery({ text: 'Type your answer' }).catch(() => {})
+    await ctx.answerCallbackQuery({ text: 'Пришли текст' }).catch(() => {})
     void bot.api
-      .sendMessage(ap.chatId, '✍️ <b>Send your answer</b> as a message.', {
+      .sendMessage(ap.chatId, '✍️ <b>Пришли ответ</b> сообщением.', {
         ...(ap.threadId != null ? { message_thread_id: ap.threadId } : {}),
         parse_mode: 'HTML',
       })
@@ -671,47 +682,47 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
     }
     if (cmd === 'bind') {
       if (!arg) {
-        void say(`Usage: <code>/bind &lt;folder&gt;</code>\n\nA name under <code>${escHtml(PROJECTS_DIR)}</code> or an absolute path.`)
+        void say(`Использование: <code>/bind &lt;папка&gt;</code>\n\nИмя в ${codePath(PROJECTS_DIR)} или абсолютный путь.`)
         return
       }
       try {
         const dir = resolveProjectDir(arg, PROJECTS_DIR)
         reg[key] = { dir, ...(binding?.allow ? { allow: binding.allow } : {}) }
         saveBindings(reg)
-        void say(`🔗 <b>Bound</b>\n<code>${escHtml(key)}</code> → <code>${escHtml(dir)}</code>\n\nStart it with <code>/new</code> or <code>/resume</code>.`)
+        void say(`🔗 <b>Привязано</b>\n<code>${escHtml(key)}</code> → ${codePath(dir)}\n\nЗапусти через <code>/new</code> или <code>/resume</code>.`)
       } catch (e) {
-        void say(`⚠️ <b>Bind failed</b>: ${escHtml(e instanceof Error ? e.message : String(e))}`)
+        void say(`⚠️ <b>Не удалось привязать</b>: ${escHtml(e instanceof Error ? e.message : String(e))}`)
       }
       return
     }
     if (cmd === 'unbind') {
       if (!binding) {
-        void say('Nothing is bound here.')
+        void say('Здесь ничего не привязано.')
         return
       }
       delete reg[key]
       saveBindings(reg)
-      void say(`🔓 <b>Unbound</b> <i>(was <code>${escHtml(binding.dir)}</code>)</i>`)
+      void say(`🔓 <b>Отвязано</b> <i>(было ${codePath(binding.dir)})</i>`)
       return
     }
     // allow
     if (!binding) {
-      void say('Bind first: <code>/bind &lt;folder&gt;</code>')
+      void say('Сначала привяжи: <code>/bind &lt;папка&gt;</code>')
       return
     }
     if (!arg) {
-      const current = binding.allow?.length ? `<code>${escHtml(binding.allow.join(', '))}</code>` : '<i>none</i>'
-      void say(`👥 <b>Allowed</b>: ${current}\n\nUsage: <code>/allow &lt;user id …&gt;</code>\n<i>Remove by editing bindings.json.</i>`)
+      const current = binding.allow?.length ? `<code>${escHtml(binding.allow.join(', '))}</code>` : '<i>никого</i>'
+      void say(`👥 <b>Доступ</b>: ${current}\n\nИспользование: <code>/allow &lt;id …&gt;</code>\n<i>Убрать — правкой bindings.json.</i>`)
       return
     }
     const ids = arg.split(/[\s,]+/).filter(s => /^\d+$/.test(s))
     if (ids.length === 0) {
-      void say('Usage: <code>/allow &lt;user id …&gt;</code>')
+      void say('Использование: <code>/allow &lt;id …&gt;</code>')
       return
     }
     binding.allow = [...new Set([...(binding.allow ?? []), ...ids])]
     saveBindings(reg)
-    void say(`✅ <b>Allowed</b>: <code>${escHtml(binding.allow.join(', '))}</code>`)
+    void say(`✅ <b>Доступ</b>: <code>${escHtml(binding.allow.join(', '))}</code>`)
     return
   }
 
@@ -724,20 +735,20 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
 
   if (cmd === 'status') {
     if (!binding) {
-      void say(`📊 <b>${escHtml(key)}</b>\n\n<i>Not bound.</i> Bind with <code>/bind &lt;folder&gt;</code> (admin).`)
+      void say(`📊 <b>${escHtml(key)}</b>\n\n<i>Не привязано.</i> Привяжи через <code>/bind &lt;папка&gt;</code> (админ).`)
       return
     }
-    const lines = [`📊 <b>${escHtml(key)}</b>`, `📁 <code>${escHtml(binding.dir)}</code>`, '']
+    const lines = [`📊 <b>${escHtml(key)}</b>`, `📁 ${codePath(binding.dir)}`, '']
     if (session) {
       const pidState = session.pid
-        ? alive(session.pid) ? `alive <i>(pid ${session.pid})</i>` : `<b>dead</b> <i>(pid ${session.pid})</i>`
-        : 'pid unknown'
-      lines.push(`🟢 claude: connected, ${pidState}`, `🪟 tmux: ${session.pane ? `<code>${escHtml(session.pane)}</code>` : '<i>not in tmux</i>'}`)
+        ? alive(session.pid) ? `жив <i>(pid ${session.pid})</i>` : `<b>мёртв</b> <i>(pid ${session.pid})</i>`
+        : 'pid неизвестен'
+      lines.push(`🟢 claude: подключён, ${pidState}`, `🪟 tmux: ${session.pane ? `<code>${escHtml(session.pane)}</code>` : '<i>не в tmux</i>'}`)
     } else {
-      lines.push('⚪️ claude: not connected')
+      lines.push('⚪️ claude: не подключён')
       const name = basename(binding.dir)
-      const tmuxState = (await hasTmuxSession(name)) ? 'exists' : 'no session'
-      lines.push(`🪟 tmux <code>${escHtml(name)}</code>: ${tmuxState}`, '', '→ <code>/resume</code> to bring it up')
+      const tmuxState = (await hasTmuxSession(name)) ? 'есть' : 'нет сессии'
+      lines.push(`🪟 tmux <code>${escHtml(name)}</code>: ${tmuxState}`, '', '→ <code>/resume</code> чтобы поднять')
     }
     const limits = readLimits(binding.dir)
     if (limits) {
@@ -747,47 +758,47 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
       }
     }
     if (binding.allow?.length) {
-      lines.push('', `👥 allow: <code>${escHtml(binding.allow.join(', '))}</code>`)
+      lines.push('', `👥 доступ: <code>${escHtml(binding.allow.join(', '))}</code>`)
     }
     void say(lines.join('\n'))
     return
   }
 
   if (!binding) {
-    void say('Nothing is bound here. Bind with <code>/bind &lt;folder&gt;</code> first.')
+    void say('Здесь ничего не привязано. Сначала <code>/bind &lt;папка&gt;</code>.')
     return
   }
 
   if (cmd === 'compact' || cmd === 'esc' || cmd === 'restart') {
     if (live.length === 0) {
-      void say('⚠️ No live session. Try <code>/resume</code>.')
+      void say('⚠️ Нет живой сессии. Попробуй <code>/resume</code>.')
       return
     }
     for (const conn of live) {
       const s = router.get(conn)
       if (!s?.pane) {
-        void say("⚠️ Session isn't in tmux — can't control it.")
+        void say('⚠️ Сессия не в tmux — не могу ей управлять.')
         continue
       }
       try {
         if (cmd === 'compact') {
           await sendKeys(s.pane, '/compact', 'Enter')
-          void say('🗜 <code>/compact</code> sent.')
+          void say('🗜 <code>/compact</code> отправлен.')
         } else if (cmd === 'esc') {
           await sendKeys(s.pane, 'Escape')
-          void say('⎋ <b>Esc</b> sent.')
+          void say('⎋ <b>Esc</b> отправлен.')
         } else {
           if (!s.pid || !s.cmdline?.length) {
-            void say("⚠️ Restart unavailable — couldn't identify the claude process.")
+            void say('⚠️ Рестарт недоступен — не опознал процесс claude.')
             continue
           }
-          void say('♻️ <b>Restarting</b> the session…')
+          void say('♻️ <b>Перезапускаю</b> сессию…')
           void restartSession(s.pane, s.pid, s.cmdline, log)
-            .then(() => say('♻️ Relaunch sent.'))
-            .catch(e => say(`♻️ restart failed: ${e}`))
+            .then(() => say('♻️ Перезапуск отправлен.'))
+            .catch(e => say(`⚠️ Рестарт не удался: ${escHtml(String(e))}`))
         }
       } catch (e) {
-        void say(`⚙️ ${cmd} failed: ${e}`)
+        void say(`⚠️ <b>${escHtml(cmd)} не удалось</b>: ${escHtml(String(e))}`)
       }
     }
     return
@@ -795,7 +806,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
 
   // resume | new
   if (live.length > 0) {
-    void say(`⚙️ Session already connected <i>(${session?.pane ? `<code>${escHtml(session.pane)}</code>` : 'no tmux'})</i>.\n\nUse <code>/restart</code> or <code>/compact</code>.`)
+    void say(`⚙️ Сессия уже подключена <i>(${session?.pane ? `<code>${escHtml(session.pane)}</code>` : 'не в tmux'})</i>.\n\nИспользуй <code>/restart</code> или <code>/compact</code>.`)
     return
   }
   // A foreign claude in this dir (no channels, invisible to the hub): /resume=--continue
@@ -803,9 +814,9 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
   const foreign = claudePidsInDir(binding.dir)
   if (foreign.length > 0) {
     void say(
-      `⚠️ <b>claude is already running here</b> <i>(pid ${foreign.join(', ')})</i>, but without channels — ` +
-        `the hub doesn't manage it.\n\nNot starting a second one: <code>/resume</code> would fork its conversation. ` +
-        `Close that session (or relaunch it with the dev channel), then retry.`,
+      `⚠️ <b>В этой папке уже работает claude</b> <i>(pid ${foreign.join(', ')})</i>, но без каналов — ` +
+        `хаб им не управляет.\n\nВторую не поднимаю: <code>/resume</code> форкнул бы её беседу. ` +
+        `Закрой ту сессию (или перезапусти её с dev-каналом) и повтори.`,
     )
     return
   }
@@ -814,15 +825,15 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
     const created = await ensureTmuxSession(name, binding.dir)
     const launch = buildLaunch(binding.cmdline, cmd === 'resume' ? 'resume' : 'new')
     if (created) {
-      void say(`🪟 tmux <code>${escHtml(name)}</code> created in <code>${escHtml(binding.dir)}</code>.`)
+      void say(`🪟 tmux <code>${escHtml(name)}</code> создан в ${codePath(binding.dir)}.`)
     } else {
-      void say(`🪟 tmux <code>${escHtml(name)}</code> exists — typing launch into its active pane.`)
+      void say(`🪟 tmux <code>${escHtml(name)}</code> уже есть — набираю запуск в его активный pane.`)
     }
     await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${launch}`)
-    void say(`🚀 <b>${cmd === 'resume' ? 'Resuming' : 'Starting fresh'}</b>\n<code>${escHtml(launch)}</code>`)
+    void say(`🚀 <b>${cmd === 'resume' ? 'Возобновляю' : 'Запускаю заново'}</b>\n<code>${escHtml(launch)}</code>`)
     void ackStartupPrompts(`=${name}:`, log)
   } catch (e) {
-    void say(`⚠️ <b>${escHtml(cmd)} failed</b>: ${escHtml(String(e))}`)
+    void say(`⚠️ <b>${escHtml(cmd)} не удалось</b>: ${escHtml(String(e))}`)
   }
 }
 
@@ -923,7 +934,7 @@ bot.on('callback_query:data', async ctx => {
     return
   }
   if (!isAdmin(String(ctx.from.id))) {
-    await ctx.answerCallbackQuery({ text: 'Not authorized' }).catch(() => {})
+    await ctx.answerCallbackQuery({ text: 'Нет прав' }).catch(() => {})
     return
   }
   const [, behavior, request_id] = m
@@ -931,7 +942,7 @@ bot.on('callback_query:data', async ctx => {
   if (behavior === 'more') {
     const details = pendingPermissions.get(request_id)
     if (!details) {
-      await ctx.answerCallbackQuery({ text: 'Details unavailable' }).catch(() => {})
+      await ctx.answerCallbackQuery({ text: 'Детали недоступны' }).catch(() => {})
       return
     }
     let prettyInput: string
@@ -941,18 +952,18 @@ bot.on('callback_query:data', async ctx => {
       prettyInput = details.input_preview
     }
     const expanded =
-      `🔐 <b>Permission requested</b>: <code>${escHtml(details.tool_name)}</code>\n\n` +
+      `🔐 <b>Запрос разрешения</b>: <code>${escHtml(details.tool_name)}</code>\n\n` +
       `${escHtml(details.description)}\n\n<pre>${escHtml(prettyInput)}</pre>`
     const keyboard = new InlineKeyboard()
-      .text('✅ Allow', `perm:allow:${request_id}`)
-      .text('❌ Deny', `perm:deny:${request_id}`)
+      .text('✅ Разрешить', `perm:allow:${request_id}`)
+      .text('❌ Отклонить', `perm:deny:${request_id}`)
     await ctx.editMessageText(expanded, { parse_mode: 'HTML', reply_markup: keyboard }).catch(() => {})
     await ctx.answerCallbackQuery().catch(() => {})
     return
   }
 
   const ok = resolvePermission(request_id, behavior as 'allow' | 'deny')
-  const label = !ok ? '🤷 Session gone' : behavior === 'allow' ? '✅ Allowed' : '❌ Denied'
+  const label = !ok ? '🤷 Сессия ушла' : behavior === 'allow' ? '✅ Разрешено' : '❌ Отклонено'
   await ctx.answerCallbackQuery({ text: label }).catch(() => {})
   const msg = ctx.callbackQuery.message
   if (msg && 'text' in msg && msg.text) {
@@ -992,15 +1003,15 @@ void (async () => {
           rmQuiet(SPAWN_LOCK)
           log(`polling as @${info.username}`)
           void bot.api.setMyCommands([
-            { command: 'status', description: 'Session status (dir/tmux/claude)' },
-            { command: 'resume', description: 'Bring session up (--continue)' },
-            { command: 'new', description: 'Start a fresh session' },
-            { command: 'compact', description: 'Send /compact to the session' },
-            { command: 'esc', description: 'Interrupt current turn' },
-            { command: 'restart', description: 'Graceful session restart' },
-            { command: 'bind', description: 'Bind this chat/topic to a project folder (admin)' },
-            { command: 'unbind', description: 'Remove binding (admin)' },
-            { command: 'allow', description: 'Allow a user for this binding (admin)' },
+            { command: 'status', description: 'Статус сессии (папка/tmux/claude/лимиты)' },
+            { command: 'resume', description: 'Поднять сессию (--continue)' },
+            { command: 'new', description: 'Запустить свежую сессию' },
+            { command: 'compact', description: 'Отправить /compact в сессию' },
+            { command: 'esc', description: 'Прервать текущий ход' },
+            { command: 'restart', description: 'Аккуратный перезапуск сессии' },
+            { command: 'bind', description: 'Привязать этот чат/топик к папке проекта (админ)' },
+            { command: 'unbind', description: 'Снять привязку (админ)' },
+            { command: 'allow', description: 'Дать доступ пользователю к этому биндингу (админ)' },
           ]).catch(() => {})
         },
       })
