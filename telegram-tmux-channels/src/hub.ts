@@ -553,6 +553,9 @@ function learnCmdline(session: SessionInfo): void {
   let changed = false
   const keys = session.bindingKeys?.length ? session.bindingKeys : keysForDir(reg, session.cwd)
   for (const k of keys) {
+    if (!reg[k]) {
+      continue // stale bindingKeys — the binding was removed after this session launched
+    }
     if (JSON.stringify(reg[k].cmdline) !== JSON.stringify(session.cmdline)) {
       reg[k].cmdline = session.cmdline
       changed = true
