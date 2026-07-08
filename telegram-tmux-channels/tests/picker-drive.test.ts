@@ -20,7 +20,7 @@ describe('buildKeyboard', () => {
     const p = parsePicker(fx('ask-multi.txt'))!
     const kb = buildKeyboard(p, 'dcab0000', [2])
     const flat = kb.buttons.flat()
-    expect(flat.find(b => b.data === 'pk:dcab0000:o1')?.text).toBe('⬜ Python')
+    expect(flat.find(b => b.data === 'pk:dcab0000:o1')?.text).toBe('Python')
     expect(flat.find(b => b.data === 'pk:dcab0000:o2')?.text).toBe('✅ Go')
     expect(flat.some(b => b.data === 'pk:dcab0000:s')).toBe(true)
   })

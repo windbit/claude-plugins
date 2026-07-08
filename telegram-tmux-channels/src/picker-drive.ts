@@ -13,7 +13,7 @@ export function buildKeyboard(
     if (opt.index === picker.customIndex) {
       continue
     }
-    const mark = picker.mode === 'multi' ? (checkedSet.has(opt.index) ? '✅ ' : '⬜ ') : ''
+    const mark = picker.mode === 'multi' && checkedSet.has(opt.index) ? '✅ ' : ''
     buttons.push([{ text: `${mark}${opt.label}`, data: `pk:${token}:o${opt.index}` }])
   }
   const tail: { text: string; data: string }[] = []
