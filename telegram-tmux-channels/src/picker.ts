@@ -15,10 +15,34 @@ export type Picker = {
   hash: string
 }
 
+const MAX_TITLE_LINES = 3
+
 function optionLabel(rest: string): string {
   const noCheckbox = rest.replace(CHECKBOX_RE, '')
   const beforeDesc = noCheckbox.split(/\s{2,}/)[0] // inline description sits after 2+ spaces
   return beforeDesc.replace(/\s*✔\s*$/, '').trim()
+}
+
+function isSeparator(t: string): boolean {
+  return /^[─▔━]+$/.test(t)
+}
+
+// UI chrome inside a picker box (not a separator — those are handled by the scan):
+// blanks, the ●-sub-control, and the header chip (`☐ Word` / multi `← ☐ … Submit →`).
+function isChrome(t: string): boolean {
+  if (!t) {
+    return true
+  }
+  if (/^●/.test(t)) {
+    return true
+  }
+  if (/^[☐☒]/.test(t)) {
+    return true
+  }
+  if (t.startsWith('←') && (t.includes('Submit') || t.includes('→'))) {
+    return true
+  }
+  return false
 }
 
 function fnv1a(s: string): string {
@@ -30,33 +54,54 @@ function fnv1a(s: string): string {
   return (h >>> 0).toString(16).padStart(8, '0')
 }
 
+// Parse only the picker box: scan UPWARD from the footer, collecting the option
+// block and (up to MAX_TITLE_LINES of) the title above it. Content further up the
+// screen (scrollback, prior agent output with its own numbered lists) is ignored.
 export function parsePicker(text: string): Picker | undefined {
-  if (!text.includes(FOOTER)) {
+  const lines = text.split('\n')
+  const footerIdx = lines.findIndex(l => l.includes(FOOTER))
+  if (footerIdx < 0) {
     return undefined
   }
   const options: PickerOption[] = []
-  const titleLines: string[] = []
+  let titleParts: string[] = []
+  let titleStarted = false
   let multi = false
-  let seenOption = false
-  for (const line of text.split('\n')) {
-    const m = OPTION_RE.exec(line)
+  for (let i = footerIdx - 1; i >= 0; i--) {
+    const t = lines[i].trim()
+    const m = OPTION_RE.exec(lines[i])
     if (m) {
-      seenOption = true
       if (CHECKBOX_RE.test(m[2])) {
         multi = true
       }
-      options.push({ index: Number(m[1]), label: optionLabel(m[2]) })
+      options.unshift({ index: Number(m[1]), label: optionLabel(m[2]) })
+      titleParts = [] // an option above resets the title — descriptions between options aren't it
+      titleStarted = false
       continue
     }
-    if (!seenOption && line.trim() && !line.includes('☐') && !line.includes('Submit')) {
-      titleLines.push(line.trim())
+    if (isSeparator(t)) {
+      if (titleStarted) {
+        break // separator above the title = top of the picker box; stop before scrollback
+      }
+      continue // separator between options is internal
+    }
+    if (isChrome(t)) {
+      continue
+    }
+    if (options.length === 0) {
+      continue
+    }
+    titleStarted = true
+    titleParts.unshift(t)
+    if (titleParts.length >= MAX_TITLE_LINES) {
+      break
     }
   }
   if (options.length < 2) {
     return undefined
   }
   const custom = options.find(o => CUSTOM_RE.test(o.label))
-  const title = titleLines.join(' ').trim()
+  const title = titleParts.join(' ').trim()
   return {
     title,
     options,

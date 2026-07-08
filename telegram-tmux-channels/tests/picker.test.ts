@@ -34,6 +34,12 @@ describe('parsePicker', () => {
   test('обычный текст без пикера → undefined', () => {
     expect(parsePicker('just a prompt\n❯ \n')).toBeUndefined()
   })
+  test('scrollback: нумерованный список ВЫШЕ пикера не попадает в опции/заголовок', () => {
+    const p = parsePicker(fx('scrollback-noise.txt'))!
+    expect(p.options.map(o => o.label)).toEqual(['Мигрировать', 'Откатить', 'Type something.'])
+    expect(p.title).toBe('Какой следующий шаг?')
+    expect(p.title).not.toContain('бэкап')
+  })
   test('хэш стабилен и различает пикеры', () => {
     expect(parsePicker(fx('ask-single.txt'))!.hash).toBe(parsePicker(fx('ask-single.txt'))!.hash)
     expect(parsePicker(fx('ask-single.txt'))!.hash).not.toBe(parsePicker(fx('ask-multi.txt'))!.hash)

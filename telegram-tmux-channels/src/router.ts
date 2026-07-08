@@ -16,6 +16,10 @@ export class Router<C> {
     return this.subs.get(conn)
   }
 
+  all(): C[] {
+    return [...this.subs.keys()]
+  }
+
   byDir(dir: string): C[] {
     const out: C[] = []
     for (const [conn, s] of this.subs) {

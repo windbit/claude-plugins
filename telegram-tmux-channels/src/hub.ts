@@ -22,11 +22,13 @@ import { chunk, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES, PHOTO_EXTS } from './chun
 import {
   parseOpsCommand, sendKeys, typeLine, restartSession, alive,
   hasTmuxSession, ensureTmuxSession, buildLaunch, shellQuote, ackStartupPrompts,
-  type OpsCommand,
+  capturePane, type OpsCommand,
 } from './tmux-ops'
 import { claudePidsInDir } from './proc'
 import { readLimits, formatLimits } from './limits'
 import { rmQuiet } from './util'
+import { parsePicker, checkedIndexes, type Picker } from './picker'
+import { buildKeyboard, parseCallback } from './picker-drive'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
 
@@ -72,6 +74,8 @@ process.on('uncaughtException', err => log(`uncaught exception: ${err}`))
 const SPAWN_LOCK = join(STATE_DIR, 'hub.spawnlock')
 const MAX_409_ATTEMPTS = 8
 const MAX_BACKOFF_MS = 15_000
+const SCREEN_POLL_MS = 1500
+const CUSTOM_TIMEOUT_MS = 120_000
 
 const bot = new Bot(TOKEN)
 let botUsername = ''
@@ -294,6 +298,120 @@ Bun.listen<undefined>({
 })
 chmodSync(SOCK_PATH, 0o600)
 log(`listening on ${SOCK_PATH}`)
+
+// ── picker bridge: forward Claude Code TUI pickers to Telegram buttons ──
+type ActivePicker = {
+  chatId: string
+  threadId?: number
+  msgId: number
+  hash: string
+  token: string
+  picker: Picker
+}
+const activePickers = new Map<string, ActivePicker>() // key = pane
+const awaitingCustom = new Map<string, { chatId: string; threadId?: number; at: number }>()
+
+function bindingAllows(chatId: string, senderId: string): boolean {
+  const reg = loadBindings()
+  for (const [key, entry] of Object.entries(reg)) {
+    if (keyToTarget(key).chat_id === chatId && entry.allow?.includes(senderId)) {
+      return true
+    }
+  }
+  return false
+}
+
+function pickerChatFor(dir: string): { chatId: string; threadId?: number } | undefined {
+  const key = keysForDir(loadBindings(), dir)[0]
+  if (!key) {
+    return undefined
+  }
+  const t = keyToTarget(key)
+  return { chatId: t.chat_id, ...(t.thread_id != null ? { threadId: t.thread_id } : {}) }
+}
+
+function kbFrom(picker: Picker, token: string, checked: number[]): InlineKeyboard {
+  const kb = new InlineKeyboard()
+  for (const row of buildKeyboard(picker, token, checked).buttons) {
+    for (const b of row) {
+      kb.text(b.text, b.data)
+    }
+    kb.row()
+  }
+  return kb
+}
+
+function paneByToken(token: string): string | undefined {
+  for (const [pane, ap] of activePickers) {
+    if (ap.token === token) {
+      return pane
+    }
+  }
+  return undefined
+}
+
+// folder-trust / dev-channel prompts also carry "Esc to cancel"; the hub auto-acks
+// them (ackStartupPrompts), so they must not surface as Telegram pickers.
+const AUTO_ACK_MARKERS = ['I trust this folder', 'I am using this for local development']
+
+function isAutoAckPrompt(picker: Picker): boolean {
+  return picker.options.some(o => AUTO_ACK_MARKERS.some(m => o.label.includes(m)))
+}
+
+async function detectPicker(pane: string, cwd: string, text: string): Promise<void> {
+  const picker = parsePicker(text)
+  const existing = activePickers.get(pane)
+  if (!picker || isAutoAckPrompt(picker)) {
+    if (existing) {
+      void bot.api.editMessageText(existing.chatId, existing.msgId, '▫️ picker closed').catch(() => {})
+      activePickers.delete(pane)
+    }
+    return
+  }
+  if (existing && existing.hash === picker.hash) {
+    return
+  }
+  const target = pickerChatFor(cwd)
+  if (!target) {
+    return
+  }
+  const sent = await bot.api
+    .sendMessage(target.chatId, `🔽 ${picker.title || 'Выбор'}`, {
+      ...(target.threadId != null ? { message_thread_id: target.threadId } : {}),
+      reply_markup: kbFrom(picker, picker.hash, checkedIndexes(text)),
+    })
+    .catch(() => undefined)
+  if (sent) {
+    activePickers.set(pane, {
+      chatId: target.chatId,
+      ...(target.threadId != null ? { threadId: target.threadId } : {}),
+      msgId: sent.message_id,
+      hash: picker.hash,
+      token: picker.hash,
+      picker,
+    })
+  }
+}
+
+// One capture per live pane per tick, fanned out to screen detectors.
+async function pollScreens(): Promise<void> {
+  const seen = new Set<string>()
+  for (const conn of router.all()) {
+    const s = router.get(conn)
+    if (!s?.pane || !s.cwd) {
+      continue
+    }
+    seen.add(s.pane)
+    const text = await capturePane(s.pane).catch(() => '')
+    await detectPicker(s.pane, s.cwd, text)
+  }
+  for (const pane of [...activePickers.keys()]) {
+    if (!seen.has(pane)) {
+      activePickers.delete(pane)
+    }
+  }
+}
+setInterval(() => void pollScreens(), SCREEN_POLL_MS)
 
 async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promise<void> {
   if (msg.op === 'subscribe') {
