@@ -128,8 +128,13 @@ export async function sendKeys(pane: string, ...keys: string[]): Promise<void> {
   await tmux('send-keys', '-t', pane, ...keys)
 }
 
+const TYPE_ENTER_GAP_MS = 500
+
 export async function typeLine(pane: string, text: string): Promise<void> {
   await tmux('send-keys', '-t', pane, '-l', text)
+  // Claude Code's TUI can eat a rapid-fire Enter as a newline instead of submit
+  // (ccgram learned this) — let the text settle before Enter.
+  await sleep(TYPE_ENTER_GAP_MS)
   await tmux('send-keys', '-t', pane, 'Enter')
 }
 

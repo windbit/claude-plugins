@@ -413,6 +413,53 @@ async function pollScreens(): Promise<void> {
 }
 setInterval(() => void pollScreens(), SCREEN_POLL_MS)
 
+async function handlePickCallback(
+  ctx: Context,
+  pick: NonNullable<ReturnType<typeof parseCallback>>,
+): Promise<void> {
+  const pane = paneByToken(pick.token)
+  const ap = pane ? activePickers.get(pane) : undefined
+  if (!pane || !ap) {
+    await ctx.answerCallbackQuery({ text: 'picker gone' }).catch(() => {})
+    return
+  }
+  const senderId = String(ctx.from!.id)
+  if (!isAdmin(senderId) && !bindingAllows(ap.chatId, senderId)) {
+    await ctx.answerCallbackQuery({ text: 'not allowed' }).catch(() => {})
+    return
+  }
+  const action = pick.action
+  if (action.kind === 'opt' && ap.picker.mode === 'single') {
+    await sendKeys(pane, String(action.index))
+    await ctx.answerCallbackQuery({ text: 'ok' }).catch(() => {})
+  } else if (action.kind === 'opt') {
+    await sendKeys(pane, String(action.index)) // multi: toggle checkbox
+    await ctx.answerCallbackQuery().catch(() => {})
+    const text = await capturePane(pane).catch(() => '')
+    await ctx
+      .editMessageReplyMarkup({ reply_markup: kbFrom(ap.picker, ap.token, checkedIndexes(text)) })
+      .catch(() => {})
+  } else if (action.kind === 'submit') {
+    await sendKeys(pane, 'Right') // → review screen
+    await sendKeys(pane, '1') // Submit answers
+    await ctx.answerCallbackQuery({ text: 'submitted' }).catch(() => {})
+  } else {
+    if (ap.picker.customIndex != null) {
+      await sendKeys(pane, String(ap.picker.customIndex))
+      await sendKeys(pane, 'Enter')
+    }
+    awaitingCustom.set(pane, {
+      chatId: ap.chatId,
+      ...(ap.threadId != null ? { threadId: ap.threadId } : {}),
+      at: Date.now(),
+    })
+    await ctx.answerCallbackQuery({ text: 'введи текст ответом' }).catch(() => {})
+    void bot.api
+      .sendMessage(ap.chatId, '✍️ пришли текст ответа сообщением', ap.threadId != null ? { message_thread_id: ap.threadId } : {})
+      .catch(() => {})
+  }
+}
+
 async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promise<void> {
   if (msg.op === 'subscribe') {
     router.subscribe(sock, msg.session)
@@ -473,6 +520,22 @@ async function handleInbound({ ctx, text, downloadImage, attachment }: Inbound):
   const msgId = ctx.message?.message_id
   const threadId = ctx.message?.message_thread_id
   const key = messageKey({ chatType: chat.type, chatId: chat_id, threadId })
+
+  // custom-answer text for a picker: a pane in this chat is waiting for free text
+  for (const [pane, aw] of awaitingCustom) {
+    if (aw.chatId !== chat_id) {
+      continue
+    }
+    if (Date.now() - aw.at > CUSTOM_TIMEOUT_MS) {
+      awaitingCustom.delete(pane)
+      continue
+    }
+    if (isAdmin(senderId) || bindingAllows(chat_id, senderId)) {
+      await typeLine(pane, text)
+      awaitingCustom.delete(pane)
+      return
+    }
+  }
 
   // a text permission reply ("yes xxxxx") isn't routed — it goes to the request_id owner
   const permMatch = PERMISSION_REPLY_RE.exec(text)
@@ -807,6 +870,11 @@ bot.on('message:sticker', async ctx => {
 })
 
 bot.on('callback_query:data', async ctx => {
+  const pick = parseCallback(ctx.callbackQuery.data)
+  if (pick) {
+    await handlePickCallback(ctx, pick)
+    return
+  }
   const m = /^perm:(allow|deny|more):([a-km-z]{5})$/.exec(ctx.callbackQuery.data)
   if (!m) {
     await ctx.answerCallbackQuery().catch(() => {})
