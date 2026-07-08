@@ -17,8 +17,8 @@ export type TrustedGroupConfig = {
 }
 
 export const MODE_LABEL: Record<TrustedGroupMode, string> = {
-  folder: '📁 Folder',
-  worktree: '🌿 Worktree',
+  folder: '📁 Папка по умолчанию',
+  worktree: '🌿 Worktree (своя git-ветка)',
   hook: '🪝 Hook',
 }
 

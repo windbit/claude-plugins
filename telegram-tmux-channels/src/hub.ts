@@ -720,6 +720,21 @@ function modeKeyboard(key: string, cfg: TrustedGroupConfig): InlineKeyboard {
   return kb.text(OWN_DIR_LABEL, `topicdir:${key}`).row()
 }
 
+const MODE_EXPLAIN: Record<TrustedGroupMode, string> = {
+  folder: '📁 <b>Папка по умолчанию</b> — работать прямо в базе.',
+  worktree: '🌿 <b>Worktree</b> — своя git-ветка/папка, сделанная <code>git worktree add</code> от базы.',
+  hook: '🪝 <b>Hook</b> — папку готовит внешний скрипт (worktree/БД/т.д.), хаб только запускает claude в том, что он вернёт.',
+}
+
+// button labels alone can't fit a path — spell out what each mode actually does here
+function modePromptText(cfg: TrustedGroupConfig, intro: string): string {
+  const base = cfg.dir
+    ? `База: ${codePath(cfg.dir)}`
+    : 'База не задана — после выбора спрошу папку.'
+  const modeLines = cfg.modes.map(m => MODE_EXPLAIN[m])
+  return [intro, '', base, '', ...modeLines, `${OWN_DIR_LABEL} — указать путь для этого топика вручную.`].join('\n')
+}
+
 // forum_topic_created can be missed (hub down, race) — a message in an unbound
 // topic of a trusted group is treated the same way, using the message itself
 // as the branch/slug source (the topic's real title isn't available here).
@@ -734,8 +749,9 @@ async function handleLateTopic(
   if (cfg.modes.length > 1) {
     pendingModeChoice.set(key, { cfg, topicName: firstText, say })
     void bot.api
-      .sendMessage(chatId, 'Похоже, это новый топик — как поднять сессию?', {
+      .sendMessage(chatId, modePromptText(cfg, 'Похоже, это новый топик — как поднять сессию?'), {
         message_thread_id: threadId,
+        parse_mode: 'HTML',
         reply_markup: modeKeyboard(key, cfg),
       })
       .catch(() => {})
@@ -1088,8 +1104,9 @@ bot.on('message:forum_topic_created', ctx => {
   if (cfg.modes.length > 1) {
     pendingModeChoice.set(key, { cfg, topicName, say })
     void bot.api
-      .sendMessage(chat_id, 'Как поднять сессию для этого топика?', {
+      .sendMessage(chat_id, modePromptText(cfg, 'Как поднять сессию для этого топика?'), {
         message_thread_id: threadId,
+        parse_mode: 'HTML',
         reply_markup: modeKeyboard(key, cfg),
       })
       .catch(() => {})
