@@ -118,118 +118,135 @@ async function handleRpc(
   params: Record<string, unknown>,
 ): Promise<string> {
   switch (method) {
-    case 'reply': {
-      const keys = ownKeys(conn)
-      const target = targetFor(
-        keys,
-        params.chat_id as string | undefined,
-        params.thread_id as string | undefined,
-      )
-      if (!keys.some(k => keyToTarget(k).chat_id === target.chat_id)) {
-        throw new Error(`chat ${target.chat_id} is not bound to this session's project`)
-      }
-      const text = params.text as string
-      const reply_to = params.reply_to != null ? Number(params.reply_to) : undefined
-      const files = (params.files as string[] | undefined) ?? []
-      const parseMode = params.format === 'markdownv2' ? ('MarkdownV2' as const) : undefined
-
-      for (const f of files) {
-        assertSendable(f)
-        const st = statSync(f)
-        if (st.size > MAX_ATTACHMENT_BYTES) {
-          throw new Error(`file too large: ${f} (${(st.size / 1024 / 1024).toFixed(1)}MB, max 50MB)`)
-        }
-      }
-
-      const chunks = chunk(text, MAX_CHUNK_LIMIT, 'length')
-      // thread on EVERY send — otherwise chunks/files without reply_to land in General
-      const threadOpt = target.thread_id != null ? { message_thread_id: target.thread_id } : {}
-      const sentIds: number[] = []
-      try {
-        for (let i = 0; i < chunks.length; i++) {
-          const sent = await bot.api.sendMessage(target.chat_id, chunks[i], {
-            ...threadOpt,
-            ...(reply_to != null && i === 0 ? { reply_parameters: { message_id: reply_to } } : {}),
-            ...(parseMode ? { parse_mode: parseMode } : {}),
-          })
-          sentIds.push(sent.message_id)
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        throw new Error(`reply failed after ${sentIds.length} of ${chunks.length} chunk(s) sent: ${msg}`)
-      }
-      for (const f of files) {
-        const input = new InputFile(f)
-        const opts = {
-          ...threadOpt,
-          ...(reply_to != null ? { reply_parameters: { message_id: reply_to } } : {}),
-        }
-        const sent = PHOTO_EXTS.has(extname(f).toLowerCase())
-          ? await bot.api.sendPhoto(target.chat_id, input, opts)
-          : await bot.api.sendDocument(target.chat_id, input, opts)
-        sentIds.push(sent.message_id)
-      }
-      return sentIds.length === 1
-        ? `sent (id: ${sentIds[0]})`
-        : `sent ${sentIds.length} parts (ids: ${sentIds.join(', ')})`
-    }
+    case 'reply':
+      return doReply(conn, params)
     case 'react':
-    case 'edit_message': {
-      const chat_id = params.chat_id as string
-      if (!ownKeys(conn).some(k => keyToTarget(k).chat_id === chat_id)) {
-        throw new Error(`chat ${chat_id} is not bound to this session's project`)
-      }
-      if (method === 'react') {
-        await bot.api.setMessageReaction(chat_id, Number(params.message_id), [
-          { type: 'emoji', emoji: params.emoji as ReactionTypeEmoji['emoji'] },
-        ])
-        return 'reacted'
-      }
-      const parseMode = params.format === 'markdownv2' ? ('MarkdownV2' as const) : undefined
-      const edited = await bot.api.editMessageText(
-        chat_id,
-        Number(params.message_id),
-        params.text as string,
-        ...(parseMode ? [{ parse_mode: parseMode }] : []),
-      )
-      const id = typeof edited === 'object' ? edited.message_id : params.message_id
-      return `edited (id: ${id})`
-    }
-    case 'download_attachment': {
-      const file = await bot.api.getFile(params.file_id as string)
-      if (!file.file_path) {
-        throw new Error('Telegram returned no file_path — file may have expired')
-      }
-      const res = await fetch(`https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`)
-      if (!res.ok) {
-        throw new Error(`download failed: HTTP ${res.status}`)
-      }
-      const buf = Buffer.from(await res.arrayBuffer())
-      const rawExt = file.file_path.includes('.') ? file.file_path.split('.').pop()! : 'bin'
-      const ext = rawExt.replace(/[^a-zA-Z0-9]/g, '') || 'bin'
-      const uniqueId = (file.file_unique_id ?? '').replace(/[^a-zA-Z0-9_-]/g, '') || 'dl'
-      const path = join(INBOX_DIR, `${Date.now()}-${uniqueId}.${ext}`)
-      mkdirSync(INBOX_DIR, { recursive: true })
-      writeFileSync(path, buf)
-      return path
-    }
-    case 'permission_request': {
-      const { request_id, tool_name, description, input_preview } = params as Record<string, string>
-      pendingPermissions.set(request_id, { conn, tool_name, description, input_preview })
-      const keyboard = new InlineKeyboard()
-        .text('See more', `perm:more:${request_id}`)
-        .text('✅ Allow', `perm:allow:${request_id}`)
-        .text('❌ Deny', `perm:deny:${request_id}`)
-      for (const chat_id of ADMINS) {
-        void bot.api
-          .sendMessage(chat_id, `🔐 Permission: ${tool_name}`, { reply_markup: keyboard })
-          .catch(e => log(`permission_request send to ${chat_id} failed: ${e}`))
-      }
-      return 'relayed'
-    }
+      return doReact(conn, params)
+    case 'edit_message':
+      return doEdit(conn, params)
+    case 'download_attachment':
+      return doDownload(params)
+    case 'permission_request':
+      return doPermissionRequest(conn, params)
     default:
       throw new Error(`unknown rpc method: ${method}`)
   }
+}
+
+function assertBoundChat(conn: Socket<undefined>, chat_id: string): void {
+  if (!ownKeys(conn).some(k => keyToTarget(k).chat_id === chat_id)) {
+    throw new Error(`chat ${chat_id} is not bound to this session's project`)
+  }
+}
+
+async function doReply(conn: Socket<undefined>, params: Record<string, unknown>): Promise<string> {
+  const target = targetFor(
+    ownKeys(conn),
+    params.chat_id as string | undefined,
+    params.thread_id as string | undefined,
+  )
+  assertBoundChat(conn, target.chat_id)
+  const text = params.text as string
+  const reply_to = params.reply_to != null ? Number(params.reply_to) : undefined
+  const files = (params.files as string[] | undefined) ?? []
+  const parseMode = params.format === 'markdownv2' ? ('MarkdownV2' as const) : undefined
+
+  for (const f of files) {
+    assertSendable(f)
+    const st = statSync(f)
+    if (st.size > MAX_ATTACHMENT_BYTES) {
+      throw new Error(`file too large: ${f} (${(st.size / 1024 / 1024).toFixed(1)}MB, max 50MB)`)
+    }
+  }
+
+  const chunks = chunk(text, MAX_CHUNK_LIMIT, 'length')
+  // thread on EVERY send — otherwise chunks/files without reply_to land in General
+  const threadOpt = target.thread_id != null ? { message_thread_id: target.thread_id } : {}
+  const sentIds: number[] = []
+  try {
+    for (let i = 0; i < chunks.length; i++) {
+      const sent = await bot.api.sendMessage(target.chat_id, chunks[i], {
+        ...threadOpt,
+        ...(reply_to != null && i === 0 ? { reply_parameters: { message_id: reply_to } } : {}),
+        ...(parseMode ? { parse_mode: parseMode } : {}),
+      })
+      sentIds.push(sent.message_id)
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    throw new Error(`reply failed after ${sentIds.length} of ${chunks.length} chunk(s) sent: ${msg}`)
+  }
+  for (const f of files) {
+    const input = new InputFile(f)
+    const opts = {
+      ...threadOpt,
+      ...(reply_to != null ? { reply_parameters: { message_id: reply_to } } : {}),
+    }
+    const sent = PHOTO_EXTS.has(extname(f).toLowerCase())
+      ? await bot.api.sendPhoto(target.chat_id, input, opts)
+      : await bot.api.sendDocument(target.chat_id, input, opts)
+    sentIds.push(sent.message_id)
+  }
+  return sentIds.length === 1
+    ? `sent (id: ${sentIds[0]})`
+    : `sent ${sentIds.length} parts (ids: ${sentIds.join(', ')})`
+}
+
+async function doReact(conn: Socket<undefined>, params: Record<string, unknown>): Promise<string> {
+  const chat_id = params.chat_id as string
+  assertBoundChat(conn, chat_id)
+  await bot.api.setMessageReaction(chat_id, Number(params.message_id), [
+    { type: 'emoji', emoji: params.emoji as ReactionTypeEmoji['emoji'] },
+  ])
+  return 'reacted'
+}
+
+async function doEdit(conn: Socket<undefined>, params: Record<string, unknown>): Promise<string> {
+  const chat_id = params.chat_id as string
+  assertBoundChat(conn, chat_id)
+  const parseMode = params.format === 'markdownv2' ? ('MarkdownV2' as const) : undefined
+  const edited = await bot.api.editMessageText(
+    chat_id,
+    Number(params.message_id),
+    params.text as string,
+    ...(parseMode ? [{ parse_mode: parseMode }] : []),
+  )
+  const id = typeof edited === 'object' ? edited.message_id : params.message_id
+  return `edited (id: ${id})`
+}
+
+async function doDownload(params: Record<string, unknown>): Promise<string> {
+  const file = await bot.api.getFile(params.file_id as string)
+  if (!file.file_path) {
+    throw new Error('Telegram returned no file_path — file may have expired')
+  }
+  const res = await fetch(`https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`)
+  if (!res.ok) {
+    throw new Error(`download failed: HTTP ${res.status}`)
+  }
+  const buf = Buffer.from(await res.arrayBuffer())
+  const rawExt = file.file_path.includes('.') ? file.file_path.split('.').pop()! : 'bin'
+  const ext = rawExt.replace(/[^a-zA-Z0-9]/g, '') || 'bin'
+  const uniqueId = (file.file_unique_id ?? '').replace(/[^a-zA-Z0-9_-]/g, '') || 'dl'
+  const path = join(INBOX_DIR, `${Date.now()}-${uniqueId}.${ext}`)
+  mkdirSync(INBOX_DIR, { recursive: true })
+  writeFileSync(path, buf)
+  return path
+}
+
+function doPermissionRequest(conn: Socket<undefined>, params: Record<string, unknown>): string {
+  const { request_id, tool_name, description, input_preview } = params as Record<string, string>
+  pendingPermissions.set(request_id, { conn, tool_name, description, input_preview })
+  const keyboard = new InlineKeyboard()
+    .text('See more', `perm:more:${request_id}`)
+    .text('✅ Allow', `perm:allow:${request_id}`)
+    .text('❌ Deny', `perm:deny:${request_id}`)
+  for (const chat_id of ADMINS) {
+    void bot.api
+      .sendMessage(chat_id, `🔐 Permission: ${tool_name}`, { reply_markup: keyboard })
+      .catch(e => log(`permission_request send to ${chat_id} failed: ${e}`))
+  }
+  return 'relayed'
 }
 
 // reply must never be able to send channel state (token, bindings.json)
@@ -320,12 +337,14 @@ function safeName(s: string | undefined): string | undefined {
   return s?.replace(/[<>\[\]\r\n;]/g, '_')
 }
 
-async function handleInbound(
-  ctx: Context,
-  text: string,
-  downloadImage: (() => Promise<string | undefined>) | undefined,
-  attachment?: AttachmentMeta,
-): Promise<void> {
+type Inbound = {
+  ctx: Context
+  text: string
+  downloadImage?: () => Promise<string | undefined>
+  attachment?: AttachmentMeta
+}
+
+async function handleInbound({ ctx, text, downloadImage, attachment }: Inbound): Promise<void> {
   const from = ctx.from
   const chat = ctx.chat
   if (!from || !chat) {
@@ -355,7 +374,7 @@ async function handleInbound(
 
   const ops = parseOpsCommand(text)
   if (ops && (!ops.bot || ops.bot.toLowerCase() === botUsername.toLowerCase())) {
-    await handleOps(ops.cmd, ops.arg, key, chat_id, threadId, senderId)
+    await handleOps({ cmd: ops.cmd, arg: ops.arg, key, chat_id, threadId, senderId })
     return
   }
 
@@ -408,14 +427,16 @@ async function handleInbound(
 }
 
 // bind/unbind/allow — admins only; everything else — admins and the binding's allow users
-async function handleOps(
-  cmd: OpsCommand,
-  arg: string | undefined,
-  key: string,
-  chat_id: string,
-  threadId: number | undefined,
-  senderId: string,
-): Promise<void> {
+type OpsRequest = {
+  cmd: OpsCommand
+  arg?: string
+  key: string
+  chat_id: string
+  threadId?: number
+  senderId: string
+}
+
+async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequest): Promise<void> {
   const threadOpt = threadId != null ? { message_thread_id: threadId } : {}
   const say = (text: string) => bot.api.sendMessage(chat_id, text, threadOpt).catch(() => {})
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -582,11 +603,10 @@ async function handleOps(
   }
 }
 
-bot.on('message:text', async ctx => handleInbound(ctx, ctx.message.text, undefined))
+bot.on('message:text', async ctx => handleInbound({ ctx, text: ctx.message.text }))
 
 bot.on('message:photo', async ctx => {
-  const caption = ctx.message.caption ?? '(photo)'
-  await handleInbound(ctx, caption, async () => {
+  const downloadImage = async () => {
     const photos = ctx.message.photo
     const best = photos[photos.length - 1]
     try {
@@ -605,52 +625,66 @@ bot.on('message:photo', async ctx => {
       log(`photo download failed: ${err}`)
       return undefined
     }
-  })
+  }
+  await handleInbound({ ctx, text: ctx.message.caption ?? '(photo)', downloadImage })
 })
 
 bot.on('message:document', async ctx => {
   const doc = ctx.message.document
   const name = safeName(doc.file_name)
-  await handleInbound(ctx, ctx.message.caption ?? `(document: ${name ?? 'file'})`, undefined, {
-    kind: 'document', file_id: doc.file_id, size: doc.file_size, mime: doc.mime_type, name,
+  await handleInbound({
+    ctx,
+    text: ctx.message.caption ?? `(document: ${name ?? 'file'})`,
+    attachment: { kind: 'document', file_id: doc.file_id, size: doc.file_size, mime: doc.mime_type, name },
   })
 })
 
 bot.on('message:voice', async ctx => {
   const voice = ctx.message.voice
-  await handleInbound(ctx, ctx.message.caption ?? '(voice message)', undefined, {
-    kind: 'voice', file_id: voice.file_id, size: voice.file_size, mime: voice.mime_type,
+  await handleInbound({
+    ctx,
+    text: ctx.message.caption ?? '(voice message)',
+    attachment: { kind: 'voice', file_id: voice.file_id, size: voice.file_size, mime: voice.mime_type },
   })
 })
 
 bot.on('message:audio', async ctx => {
   const audio = ctx.message.audio
   const name = safeName(audio.file_name)
-  await handleInbound(
-    ctx, ctx.message.caption ?? `(audio: ${safeName(audio.title) ?? name ?? 'audio'})`, undefined,
-    { kind: 'audio', file_id: audio.file_id, size: audio.file_size, mime: audio.mime_type, name },
-  )
+  await handleInbound({
+    ctx,
+    text: ctx.message.caption ?? `(audio: ${safeName(audio.title) ?? name ?? 'audio'})`,
+    attachment: { kind: 'audio', file_id: audio.file_id, size: audio.file_size, mime: audio.mime_type, name },
+  })
 })
 
 bot.on('message:video', async ctx => {
   const video = ctx.message.video
-  await handleInbound(ctx, ctx.message.caption ?? '(video)', undefined, {
-    kind: 'video', file_id: video.file_id, size: video.file_size, mime: video.mime_type,
-    name: safeName(video.file_name),
+  await handleInbound({
+    ctx,
+    text: ctx.message.caption ?? '(video)',
+    attachment: {
+      kind: 'video', file_id: video.file_id, size: video.file_size, mime: video.mime_type,
+      name: safeName(video.file_name),
+    },
   })
 })
 
 bot.on('message:video_note', async ctx => {
   const vn = ctx.message.video_note
-  await handleInbound(ctx, '(video note)', undefined, {
-    kind: 'video_note', file_id: vn.file_id, size: vn.file_size,
+  await handleInbound({
+    ctx,
+    text: '(video note)',
+    attachment: { kind: 'video_note', file_id: vn.file_id, size: vn.file_size },
   })
 })
 
 bot.on('message:sticker', async ctx => {
   const sticker = ctx.message.sticker
-  await handleInbound(ctx, `(sticker${sticker.emoji ? ` ${sticker.emoji}` : ''})`, undefined, {
-    kind: 'sticker', file_id: sticker.file_id, size: sticker.file_size,
+  await handleInbound({
+    ctx,
+    text: `(sticker${sticker.emoji ? ` ${sticker.emoji}` : ''})`,
+    attachment: { kind: 'sticker', file_id: sticker.file_id, size: sticker.file_size },
   })
 })
 
