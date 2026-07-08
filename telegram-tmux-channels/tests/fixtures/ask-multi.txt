@@ -1,0 +1,13 @@
+←  ☐ Языки  ✔ Submit  →
+Какие языки?
+❯ 1. [ ] Python
+  Python
+  2. [✔] Go
+  Go
+  3. [ ] Rust
+  Rust
+  4. [ ] Type something
+     Submit
+────────────────────────────────────────────────────────────────
+  5. Chat about this
+Enter to select · ↑/↓ to navigate · Esc to cancel

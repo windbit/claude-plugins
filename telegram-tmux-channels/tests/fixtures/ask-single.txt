@@ -1,0 +1,10 @@
+ ☐ Напиток
+Чай или кофе?
+❯ 1. Чай
+     Чай
+  2. Кофе
+     Кофе
+  3. Type something.
+────────────────────────────────────────────────────────────────
+  4. Chat about this
+Enter to select · ↑/↓ to navigate · Esc to cancel
