@@ -33,7 +33,7 @@ import {
   loadTrustedGroups, isExcludedTopic, slugFromTopicName, MODE_LABEL,
   type TrustedGroupConfig, type TrustedGroupMode,
 } from './trusted-groups'
-import { resolveModeDir } from './dir-resolve'
+import { resolveModeDir, gitBranch } from './dir-resolve'
 import { jsonlMtimes, captureNewSessionId } from './session-id'
 import { recordChat, chatLabel } from './known-chats'
 
@@ -1000,7 +1000,12 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
       void say(`📊 <b>${escHtml(key)}</b>\n\n<i>Не привязано.</i> Привяжи через <code>/bind &lt;папка&gt;</code> (админ).`)
       return
     }
-    const lines = [`📊 <b>${escHtml(key)}</b>`, `📁 ${codePath(binding.dir)}`, '']
+    const branch = await gitBranch(binding.dir)
+    const lines = [
+      `📊 <b>${escHtml(key)}</b>`,
+      `📁 ${codePath(binding.dir)}${branch ? ` <i>(${escHtml(branch)})</i>` : ''}`,
+      '',
+    ]
     if (session) {
       const pidState = session.pid
         ? alive(session.pid) ? `жив <i>(pid ${session.pid})</i>` : `<b>мёртв</b> <i>(pid ${session.pid})</i>`

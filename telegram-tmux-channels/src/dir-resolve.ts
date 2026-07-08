@@ -11,6 +11,12 @@ async function run(cmd: string[], opts: { cwd?: string; env?: Record<string, str
   return { ok: (await proc.exited) === 0, out, err }
 }
 
+export async function gitBranch(dir: string): Promise<string | undefined> {
+  const res = await run(['git', '-C', dir, 'branch', '--show-current'])
+  const branch = res.ok ? res.out.trim() : ''
+  return branch || undefined
+}
+
 export async function resolveWorktreeDir(baseDir: string, branch: string): Promise<string> {
   const slug = branch.replace(/\//g, '+')
   const dir = join(dirname(baseDir), `${basename(baseDir)}--${slug}`)
