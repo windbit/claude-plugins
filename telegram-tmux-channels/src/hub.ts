@@ -459,6 +459,10 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
 }
 
 // One capture per live pane per tick, fanned out to screen detectors.
+// last captured frame per pane — a change since the previous poll means the
+// agent (or something) is actively doing something, worth a "typing…" nudge
+const lastPaneText = new Map<string, string>()
+
 async function pollScreens(): Promise<void> {
   const seen = new Set<string>()
   for (const conn of router.all()) {
@@ -469,10 +473,23 @@ async function pollScreens(): Promise<void> {
     seen.add(s.pane)
     const text = await capturePane(s.pane).catch(() => '')
     await detectPicker(s.pane, s, text)
+    const prev = lastPaneText.get(s.pane)
+    if (prev !== undefined && prev !== text) {
+      const target = pickerChatFor(s)
+      if (target) {
+        typing(target.chatId, target.threadId)
+      }
+    }
+    lastPaneText.set(s.pane, text)
   }
   for (const pane of [...activePickers.keys()]) {
     if (!seen.has(pane)) {
       activePickers.delete(pane)
+    }
+  }
+  for (const pane of [...lastPaneText.keys()]) {
+    if (!seen.has(pane)) {
+      lastPaneText.delete(pane)
     }
   }
 }

@@ -1,0 +1,20 @@
+ ☐ Голосовые ответы
+
+Продолжать слать голосовые или вернуться к тексту?
+
+❯ 1. Вернуться к тексту
+     Обратно на текстовые ответы в Telegram.
+  2. Оставить голосовые как есть
+     Робо-голос ок для рабочих апдейтов.
+  3. Type something.
+────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+
+  ← telegram · troman29: (voice message)
+  ← telegram · troman29: Ты че не отвечаешь?
+
+  6 tasks (4 done, 1 in progress, 1 open)
+  ◼ User reviews spec, then invoke writing-plans
+  ◻ Await LiteLLM research workflow, revise design

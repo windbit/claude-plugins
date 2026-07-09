@@ -37,6 +37,10 @@ describe('parsePicker', () => {
   test('stale footer: остаток «Esc to cancel» с промпт-боксом под ним → не пикер', () => {
     expect(parsePicker(fx('stale-footer.txt'))).toBeUndefined()
   })
+  test('live picker + чужой хвост (эхо телеграм-сообщений, task-виджет) под футером → всё ещё пикер', () => {
+    const p = parsePicker(fx('live-with-trailing-chrome.txt'))!
+    expect(p.options.map(o => o.label)).toEqual(['Вернуться к тексту', 'Оставить голосовые как есть', 'Type something.', 'Chat about this'])
+  })
   test('scrollback: нумерованный список ВЫШЕ пикера не попадает в опции/заголовок', () => {
     const p = parsePicker(fx('scrollback-noise.txt'))!
     expect(p.options.map(o => o.label)).toEqual(['Мигрировать', 'Откатить', 'Type something.'])

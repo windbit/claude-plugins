@@ -16,9 +16,20 @@ export type Picker = {
 }
 
 const MAX_TITLE_LINES = 3
-// A live picker's footer sits at the very bottom of the pane (it owns the input area);
-// a leftover footer higher up has the prompt box + status line below it.
-const FOOTER_TAIL_MAX = 2
+// A live picker owns the input area; a leftover footer higher up has the real chat
+// input box (a bare ❯ prompt, no option text) below it — that's the staleness tell.
+// Anything else below (delivered-message echoes, a background task widget) is just
+// chrome and doesn't mean the picker resolved.
+const BARE_PROMPT_RE = /^❯\s*$/
+
+function hasLiveInputBelow(lines: string[], footerIdx: number): boolean {
+  for (let i = footerIdx + 1; i < lines.length; i++) {
+    if (BARE_PROMPT_RE.test(lines[i].trim())) {
+      return true
+    }
+  }
+  return false
+}
 
 function optionLabel(rest: string): string {
   const noCheckbox = rest.replace(CHECKBOX_RE, '')
@@ -73,7 +84,7 @@ export function parsePicker(text: string): Picker | undefined {
       break
     }
   }
-  if (footerIdx < 0 || lastIdx - footerIdx > FOOTER_TAIL_MAX) {
+  if (footerIdx < 0 || hasLiveInputBelow(lines, footerIdx)) {
     return undefined
   }
   const options: PickerOption[] = []
