@@ -58,7 +58,7 @@ function codePath(p: string): string {
 function typing(chatId: string, threadId?: number): void {
   void bot.api
     .sendChatAction(chatId, 'typing', threadId != null ? { message_thread_id: threadId } : {})
-    .catch(() => {})
+    .catch(err => log(`typing failed: chat=${chatId} ${err}`))
 }
 
 // token and admins from state .env; the real env wins
