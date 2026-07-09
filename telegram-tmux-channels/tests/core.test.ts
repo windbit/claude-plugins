@@ -250,6 +250,10 @@ describe('trusted-groups', () => {
     expect(slugFromTopicName('  spaced  ')).toBe('spaced')
     expect(slugFromTopicName('!!!')).toBe('topic')
   })
+  test('slugFromTopicName: keeps non-Latin letters (Cyrillic topic names are the norm here)', () => {
+    expect(slugFromTopicName('продать BTC')).toBe('продать-BTC')
+    expect(slugFromTopicName('Почини баг с логином')).toBe('Почини-баг-с-логином')
+  })
   test('mergeGroupConfig: group overrides win, falls back to defaults, dir optional', () => {
     const defaults: { modes: TrustedGroupMode[]; cmdline: string[]; dir: string } = {
       modes: ['folder', 'worktree'], cmdline: ['claude'], dir: '/default',

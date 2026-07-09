@@ -66,7 +66,8 @@ export function isExcludedTopic(cfg: TrustedGroupConfig, topicId: number, topicN
   return cfg.exclude?.nameContains?.some(s => topicName.includes(s)) ?? false
 }
 
-// topic title → branch/worktree slug, same rule as agentek-console's wt.py: unsafe chars → "-"
+// topic title → branch/worktree slug. Keep letters from any script (Cyrillic
+// topic names are the common case here) — only collapse genuinely unsafe chars.
 export function slugFromTopicName(name: string): string {
-  return name.trim().replace(/[^A-Za-z0-9/_.]+/g, '-').replace(/^-+|-+$/g, '') || 'topic'
+  return name.trim().replace(/[^\p{L}\p{N}/_.-]+/gu, '-').replace(/^-+|-+$/g, '') || 'topic'
 }
