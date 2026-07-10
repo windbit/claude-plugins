@@ -150,6 +150,7 @@ describe('chunk', () => {
 describe('tmux-ops', () => {
   test('parseOpsCommand: commands, @botname, args, garbage', () => {
     expect(parseOpsCommand('/compact')).toEqual({ cmd: 'compact' })
+    expect(parseOpsCommand('/clear')).toEqual({ cmd: 'clear' })
     expect(parseOpsCommand('/esc@some_bot ')).toEqual({ cmd: 'esc', bot: 'some_bot' })
     expect(parseOpsCommand('/bind myapp')).toEqual({ cmd: 'bind', arg: 'myapp' })
     expect(parseOpsCommand('/bind@bot ~/projects/myapp')).toEqual({

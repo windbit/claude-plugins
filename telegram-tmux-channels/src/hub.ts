@@ -1087,7 +1087,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
     return
   }
 
-  if (cmd === 'compact' || cmd === 'esc' || cmd === 'restart') {
+  if (cmd === 'compact' || cmd === 'clear' || cmd === 'esc' || cmd === 'restart') {
     if (live.length === 0) {
       void say('⚠️ Нет живой сессии. Попробуй <code>/resume</code>.')
       return
@@ -1102,6 +1102,9 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
         if (cmd === 'compact') {
           await sendKeys(s.pane, '/compact', 'Enter')
           void say('🗜 <code>/compact</code> отправлен.')
+        } else if (cmd === 'clear') {
+          await sendKeys(s.pane, '/clear', 'Enter')
+          void say('🧹 <b>История очищена.</b>')
         } else if (cmd === 'esc') {
           await sendKeys(s.pane, 'Escape')
           void say('⎋ <b>Esc</b> отправлен.')
@@ -1383,6 +1386,7 @@ void (async () => {
             { command: 'resume', description: 'Поднять сессию (--continue)' },
             { command: 'new', description: 'Запустить свежую сессию' },
             { command: 'compact', description: 'Отправить /compact в сессию' },
+            { command: 'clear', description: 'Очистить историю сессии' },
             { command: 'esc', description: 'Прервать текущий ход' },
             { command: 'restart', description: 'Аккуратный перезапуск сессии' },
             { command: 'bind', description: 'Привязать этот чат/топик к папке проекта (админ)' },

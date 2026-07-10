@@ -60,7 +60,7 @@ a platform limitation, not a plugin one.) The hub autospawns on the first stub c
 - `/resume` — bring a session up (`--continue`); `/new` — a fresh one; the hub creates the
   tmux session (named after the folder) and clicks through the startup prompts (folder trust,
   dev warning).
-- `/compact`, `/esc`, `/restart` — for a live session.
+- `/compact`, `/clear`, `/esc`, `/restart` — for a live session.
 - Won't start a second session if claude is already running in the folder (so `--continue`
   doesn't fork a foreign conversation).
 

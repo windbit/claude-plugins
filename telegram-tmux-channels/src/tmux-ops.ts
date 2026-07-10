@@ -2,13 +2,13 @@
 // lives outside claude, so /restart runs inline (graceful /exit → wait → relaunch).
 
 export type OpsCommand =
-  | 'compact' | 'esc' | 'restart' | 'resume' | 'new' | 'status'
+  | 'compact' | 'clear' | 'esc' | 'restart' | 'resume' | 'new' | 'status'
   | 'bind' | 'unbind' | 'allow'
 
 export function parseOpsCommand(
   text: string,
 ): { cmd: OpsCommand; bot?: string; arg?: string } | undefined {
-  const m = /^\/(compact|esc|restart|resume|new|status|bind|unbind|allow)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
+  const m = /^\/(compact|clear|esc|restart|resume|new|status|bind|unbind|allow)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
     text.trim(),
   )
   if (!m) {
