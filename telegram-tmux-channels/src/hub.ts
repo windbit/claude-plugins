@@ -292,7 +292,7 @@ function doPermissionRequest(conn: Socket<undefined>, params: Record<string, unk
     .text('❌ Отклонить', `perm:deny:${request_id}`)
   for (const chat_id of ADMINS) {
     void bot.api
-      .sendMessage(chat_id, `🔐 <b>Запрос разрешения</b>\n<code>${escHtml(tool_name)}</code>`, {
+      .sendMessage(chat_id, `🔐 <b>Запрос разрешения</b>\n\n<code>${escHtml(tool_name)}</code>`, {
         parse_mode: 'HTML',
         reply_markup: keyboard,
       })
@@ -316,6 +316,37 @@ function assertSendable(f: string): void {
   }
 }
 
+// binding keys mid intentional teardown (e.g. /restart) — suppress the crash notice for these
+const expectedDisconnect = new Set<string>()
+const DEATH_GRACE_MS = 5000
+
+// a stub's socket can close two ways: intentional (/restart flagged it in expectedDisconnect)
+// or the tmux pane/process just died — the latter used to be silent until the user's next
+// message revived it. Wait a beat for a reconnect (new spawn) before alarming.
+async function notifyUnexpectedDeath(s: SessionInfo): Promise<void> {
+  const key = s.bindingKeys?.[0]
+  if (!key || expectedDisconnect.has(key)) {
+    return
+  }
+  await new Promise(r => setTimeout(r, DEATH_GRACE_MS))
+  if (expectedDisconnect.has(key)) {
+    return
+  }
+  const binding = loadBindings()[key]
+  if (!binding || connsForBinding(key, binding.dir).length > 0) {
+    return
+  }
+  const target = keyToTarget(key)
+  await bot.api
+    .sendMessage(
+      target.chat_id,
+      '💀 <b>Сессия оборвалась неожиданно</b> (процесс/tmux пропал без <code>/restart</code>). ' +
+        'Напиши что-нибудь — переподнимется автоматически, или используй <code>/resume</code>.',
+      { ...(target.thread_id != null ? { message_thread_id: target.thread_id } : {}), parse_mode: 'HTML' },
+    )
+    .catch(() => {})
+}
+
 rmQuiet(SOCK_PATH)
 Bun.listen<undefined>({
   unix: SOCK_PATH,
@@ -330,6 +361,7 @@ Bun.listen<undefined>({
       feeders.get(sock)?.(data.toString())
     },
     close(sock) {
+      const s = router.get(sock)
       router.unsubscribe(sock)
       feeders.delete(sock)
       for (const [id, p] of pendingPermissions) {
@@ -338,6 +370,9 @@ Bun.listen<undefined>({
         }
       }
       log(`stub disconnected (${router.size()} left)`)
+      if (s) {
+        void notifyUnexpectedDeath(s)
+      }
     },
     error(_sock, err) {
       log(`stub socket error: ${err}`)
@@ -458,6 +493,81 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
   }
 }
 
+// Subagent tracking, fed by PreToolUse/SubagentStart/SubagentStop/Stop hooks
+// (src/subagent-hook.ts) — independent of the screen-diff typing nudge below, and used
+// to render a self-editing "active agents" status message per binding key. Finished
+// agents stay in the list (checkmark instead of the running dot) rather than
+// disappearing — the message is the batch's history, not just a running snapshot.
+// A batch = one turn: it stays open (sequential agents append to the same message)
+// until Stop fires (Claude finished responding), not merely until agents are done —
+// otherwise back-to-back sequential agents in one turn would each get their own message.
+type SubagentStatus = { name: string; done: boolean }
+const activeSubagents = new Map<string, Map<string, SubagentStatus>>() // key -> agentId -> status
+const subagentMessages = new Map<string, { chatId: string; threadId?: number; msgId: number }>()
+const turnOpen = new Map<string, boolean>()
+// PreToolUse(Agent) fires before SubagentStart and carries the human description;
+// SubagentStart itself only has agent_id/agent_type — correlate the two via promptId.
+const pendingDescriptions = new Map<string, string>()
+
+function renderSubagentText(items: SubagentStatus[]): string {
+  const lines = items.map(i => `${i.done ? '✅' : '🟢'} ${escHtml(i.name)}`)
+  return ['🤖 <b>Агенты</b>', '', ...lines].join('\n')
+}
+
+async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>): Promise<void> {
+  if (msg.action === 'describe') {
+    pendingDescriptions.set(msg.promptId, msg.description)
+    setTimeout(() => pendingDescriptions.delete(msg.promptId), 30_000) // safety net if never claimed
+    return
+  }
+  if (msg.action === 'turnend') {
+    for (const key of msg.bindingKeys) {
+      turnOpen.set(key, false)
+    }
+    return
+  }
+  for (const key of msg.bindingKeys) {
+    let agents = activeSubagents.get(key)
+    if (msg.action === 'start') {
+      if (!turnOpen.get(key)) {
+        agents = new Map()
+        activeSubagents.set(key, agents)
+        subagentMessages.delete(key) // previous turn's message is closed — start a fresh one
+      }
+      turnOpen.set(key, true)
+      const description = pendingDescriptions.get(msg.promptId)
+      if (description) {
+        pendingDescriptions.delete(msg.promptId)
+      }
+      agents!.set(msg.agentId, { name: description ?? msg.agentType, done: false })
+    } else {
+      const existing = agents?.get(msg.agentId)
+      if (existing) {
+        existing.done = true
+      }
+    }
+    if (!agents) {
+      continue // stop event with nothing tracked (e.g. hub restarted mid-batch) — nothing to say
+    }
+    const text = renderSubagentText([...agents.values()])
+    const tracked = subagentMessages.get(key)
+    if (!tracked) {
+      const target = keyToTarget(key)
+      const sent = await bot.api
+        .sendMessage(target.chat_id, text, {
+          ...(target.thread_id != null ? { message_thread_id: target.thread_id } : {}),
+          parse_mode: 'HTML',
+        })
+        .catch(() => undefined)
+      if (sent) {
+        subagentMessages.set(key, { chatId: target.chat_id, ...(target.thread_id != null ? { threadId: target.thread_id } : {}), msgId: sent.message_id })
+      }
+      continue
+    }
+    await bot.api.editMessageText(tracked.chatId, tracked.msgId, text, { parse_mode: 'HTML' }).catch(() => {})
+  }
+}
+
 // One capture per live pane per tick, fanned out to screen detectors.
 // last captured frame per pane — a change since the previous poll means the
 // agent (or something) is actively doing something, worth a "typing…" nudge
@@ -474,7 +584,10 @@ async function pollScreens(): Promise<void> {
     const text = await capturePane(s.pane).catch(() => '')
     await detectPicker(s.pane, s, text)
     const prev = lastPaneText.get(s.pane)
-    if (prev !== undefined && prev !== text) {
+    // subagents running = definitely busy, even on ticks where the visible screen
+    // (e.g. just an elapsed-time counter) happens to render identically to the last poll
+    const busy = s.bindingKeys?.some(k => [...(activeSubagents.get(k)?.values() ?? [])].some(a => !a.done)) ?? false
+    if (busy || (prev !== undefined && prev !== text)) {
       const target = pickerChatFor(s)
       if (target) {
         typing(target.chatId, target.threadId)
@@ -571,6 +684,10 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
       const e = err instanceof Error ? err.message : String(err)
       send(sock, { op: 'result', id: msg.id, ok: false, error: e })
     }
+    return
+  }
+  if (msg.op === 'subagent') {
+    await handleSubagentEvent(msg)
   }
 }
 
@@ -669,7 +786,7 @@ async function spawnSession(
     )
     const envPrefix = `TELEGRAM_BINDING_KEYS=${shellQuote([key])}`
     await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${envPrefix} ${launch}`)
-    say(`🚀 <b>${mode === 'resume' ? 'Возобновляю' : 'Запускаю заново'}</b>\n<code>${escHtml(launch)}</code>`)
+    say(`🚀 <b>${mode === 'resume' ? 'Возобновляю' : 'Запускаю заново'}</b>\n\n<code>${escHtml(launch)}</code>`)
     void ackStartupPrompts(`=${name}:`, log)
     if (fresh) {
       void captureNewSessionId(binding.dir, before, 60_000).then(id => {
@@ -991,7 +1108,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
         const dir = resolveProjectDir(arg, PROJECTS_DIR)
         reg[key] = { dir, ...(binding?.allow ? { allow: binding.allow } : {}) }
         saveBindings(reg)
-        void say(`🔗 <b>Привязано</b>\n<code>${escHtml(key)}</code> → ${codePath(dir)}\n\nЗапусти через <code>/new</code> или <code>/resume</code>.`)
+        void say(`🔗 <b>Привязано</b>\n\n<code>${escHtml(key)}</code> → ${codePath(dir)}\n\nЗапусти через <code>/new</code> или <code>/resume</code>.`)
       } catch (e) {
         void say(`⚠️ <b>Не удалось привязать</b>: ${escHtml(e instanceof Error ? e.message : String(e))}`)
       }
@@ -1054,6 +1171,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
     const branch = await gitBranch(binding.dir)
     const lines = [
       `📊 <b>${escHtml(key)}</b>`,
+      '',
       `📁 ${codePath(binding.dir)}${branch ? ` <i>(${escHtml(branch)})</i>` : ''}`,
       '',
     ]
@@ -1061,7 +1179,14 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
       const pidState = session.pid
         ? alive(session.pid) ? `жив <i>(pid ${session.pid})</i>` : `<b>мёртв</b> <i>(pid ${session.pid})</i>`
         : 'pid неизвестен'
-      lines.push(`🟢 claude: подключён, ${pidState}`, `🪟 tmux: ${session.pane ? `<code>${escHtml(session.pane)}</code>` : '<i>не в tmux</i>'}`)
+      const tmuxName = sessionName(key, binding.dir)
+      lines.push(
+        `🟢 claude: подключён, ${pidState}`,
+        `🪟 tmux: <code>${escHtml(tmuxName)}</code>${session.pane ? ` <i>(${escHtml(session.pane)})</i>` : ''}`,
+      )
+      if (binding.sessionId) {
+        lines.push(`🆔 session: <code>${escHtml(binding.sessionId)}</code>`)
+      }
     } else {
       lines.push('⚪️ claude: не подключён')
       const name = sessionName(key, binding.dir)
@@ -1114,9 +1239,11 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
             continue
           }
           void say('♻️ <b>Перезапускаю</b> сессию…')
+          expectedDisconnect.add(key)
           void restartSession(s.pane, s.pid, s.cmdline, log)
             .then(() => say('♻️ Перезапуск отправлен.'))
             .catch(e => say(`⚠️ Рестарт не удался: ${escHtml(String(e))}`))
+            .finally(() => setTimeout(() => expectedDisconnect.delete(key), 90_000))
         }
       } catch (e) {
         void say(`⚠️ <b>${escHtml(cmd)} не удалось</b>: ${escHtml(String(e))}`)

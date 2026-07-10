@@ -1,0 +1,94 @@
+#!/usr/bin/env bun
+// Claude Code PreToolUse(Agent|Task)/SubagentStart/SubagentStop hook target. Runs as a
+// short-lived process (spawned fresh per event, unlike the long-lived MCP stub) — reads
+// the hook JSON off stdin, connects to hub.sock, sends one line, exits. Never blocks
+// Claude Code: hard timeout, all failures swallowed.
+//
+// Real hook payload field names (verified empirically — NOT what the docs' prose implies):
+//   PreToolUse (tool_name Agent/Task): prompt_id, tool_input.description
+//   SubagentStart: prompt_id, agent_id, agent_type (no description — must correlate via prompt_id)
+//   SubagentStop: agent_id
+//   Stop: turn end — no fields we need, just the signal that the batch is closed
+import { SOCK_PATH } from './paths'
+import { encode, type StubToHub } from './protocol'
+
+const mode = process.argv[2] // 'describe' | 'start' | 'stop' | 'turnend'
+const bindingKeys = (process.env.TELEGRAM_BINDING_KEYS ?? '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean)
+const VALID_MODES = new Set(['describe', 'start', 'stop', 'turnend'])
+
+async function main(): Promise<void> {
+  if (bindingKeys.length === 0 || !mode || !VALID_MODES.has(mode)) {
+    return
+  }
+  let raw = ''
+  for await (const chunk of Bun.stdin.stream()) {
+    raw += Buffer.from(chunk).toString()
+  }
+  let data: Record<string, unknown> = {}
+  try {
+    data = JSON.parse(raw)
+  } catch {
+    return
+  }
+
+  let msg: StubToHub
+  if (mode === 'turnend') {
+    msg = { op: 'subagent', action: 'turnend', bindingKeys }
+  } else if (mode === 'describe') {
+    const promptId = String(data.prompt_id ?? '')
+    const toolInput = data.tool_input as Record<string, unknown> | undefined
+    const description = String(toolInput?.description ?? '')
+    if (!promptId || !description) {
+      return
+    }
+    msg = { op: 'subagent', action: 'describe', bindingKeys, promptId, description }
+  } else if (mode === 'start') {
+    const agentId = String(data.agent_id ?? '')
+    if (!agentId) {
+      return
+    }
+    msg = {
+      op: 'subagent',
+      action: 'start',
+      bindingKeys,
+      promptId: String(data.prompt_id ?? ''),
+      agentId,
+      agentType: String(data.agent_type ?? 'agent'),
+    }
+  } else {
+    const agentId = String(data.agent_id ?? '')
+    if (!agentId) {
+      return
+    }
+    msg = { op: 'subagent', action: 'stop', bindingKeys, agentId }
+  }
+
+  await new Promise<void>(resolve => {
+    let done = false
+    const finish = () => {
+      if (!done) {
+        done = true
+        resolve()
+      }
+    }
+    setTimeout(finish, 2000)
+    Bun.connect<undefined>({
+      unix: SOCK_PATH,
+      socket: {
+        open(sock) {
+          sock.write(encode(msg))
+          sock.end()
+          finish()
+        },
+        data() {},
+        close: finish,
+        error: finish,
+      },
+    }).catch(finish)
+  })
+}
+
+await main()

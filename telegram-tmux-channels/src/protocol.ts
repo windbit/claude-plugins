@@ -18,6 +18,14 @@ export type RpcMethod =
 export type StubToHub =
   | { op: 'subscribe'; session: SessionInfo }
   | { op: 'rpc'; id: number; method: RpcMethod; params: Record<string, unknown> }
+  // 'describe' = PreToolUse(Agent/Task) — carries the human description, correlated to the
+  // later SubagentStart by promptId (SubagentStart itself only has agent_id/agent_type, no text)
+  | { op: 'subagent'; action: 'describe'; bindingKeys: string[]; promptId: string; description: string }
+  | { op: 'subagent'; action: 'start'; bindingKeys: string[]; promptId: string; agentId: string; agentType: string }
+  | { op: 'subagent'; action: 'stop'; bindingKeys: string[]; agentId: string }
+  // Stop = the turn ended (Claude finished responding) — closes the current batch so the
+  // NEXT subagent start opens a fresh message instead of appending to a finished one
+  | { op: 'subagent'; action: 'turnend'; bindingKeys: string[] }
 
 export type HubToStub =
   | { op: 'event'; kind: 'message'; content: string; meta: Record<string, string> }
