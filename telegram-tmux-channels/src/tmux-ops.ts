@@ -153,9 +153,33 @@ export async function ensureTmuxSession(name: string, dir: string): Promise<bool
   if (await hasTmuxSession(name)) {
     return false
   }
-  await tmux('new-session', '-d', '-s', name, '-c', dir)
+  await spawnDetachedTmuxServer(name, dir)
   await sleep(700) // let the shell come up before send-keys
   return true
+}
+
+// A first `tmux new-session` for a brand-new server is a direct child of this
+// process — left alone it inherits OUR systemd cgroup, so a hub restart/crash
+// (KillMode=control-group, the default) takes down the tmux server and every
+// session/pane hanging off it, hub-unrelated work included. systemd-run --scope
+// gives the server its own cgroup, independent of ours. No systemd-run (e.g.
+// macOS) — plain spawn; launchd doesn't cgroup-kill children this way, so the
+// risk this guards against doesn't apply there.
+const SYSTEMD_RUN = Bun.which('systemd-run')
+
+async function spawnDetachedTmuxServer(name: string, dir: string): Promise<void> {
+  if (!SYSTEMD_RUN) {
+    await tmux('new-session', '-d', '-s', name, '-c', dir)
+    return
+  }
+  const unit = `tmux-server-${name.replace(/[^\w.-]/g, '-')}`
+  const proc = Bun.spawn(
+    [SYSTEMD_RUN, '--user', '--scope', '--collect', `--unit=${unit}`, '--', 'tmux', 'new-session', '-d', '-s', name, '-c', dir],
+    { stdout: 'ignore', stderr: 'pipe' },
+  )
+  if ((await proc.exited) !== 0) {
+    throw new Error(`tmux new-session (detached) failed: ${await new Response(proc.stderr).text()}`)
+  }
 }
 
 export async function capturePane(pane: string): Promise<string> {
