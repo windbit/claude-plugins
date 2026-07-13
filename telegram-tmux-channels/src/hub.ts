@@ -646,17 +646,23 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
     if (msg.action === 'start') {
       const allDone = !agents || [...agents.values()].every(a => a.done)
       const fresh = allDone && (turnEnded.get(key) ?? true)
-      if (fresh) {
+      // turnEnded is shared across the subagent/task/skill trackers (it just means "a Stop
+      // happened"), so a sibling tracker's own batch-start can leave it false here even
+      // though OUR map was never actually initialized — !agents must force a fresh map
+      // regardless of `fresh`, or the `agents!.set` below throws on undefined.
+      if (fresh || !agents) {
         agents = new Map()
         activeSubagents.set(key, agents)
-        subagentMessages.delete(key) // previous batch is fully wrapped up — start a fresh one
+        if (fresh) {
+          subagentMessages.delete(key) // previous batch is fully wrapped up — start a fresh one
+        }
       }
       turnEnded.set(key, false) // at least one agent is running again — batch stays open
       const description = pendingDescriptions.get(msg.promptId)
       if (description) {
         pendingDescriptions.delete(msg.promptId)
       }
-      agents!.set(msg.agentId, { name: description ?? msg.agentType, done: false })
+      agents.set(msg.agentId, { name: description ?? msg.agentType, done: false })
       log(`subagent: start key=${key} agentId=${msg.agentId} type=${msg.agentType} fresh=${fresh} name="${description ?? msg.agentType}"`)
     } else {
       const existing = agents?.get(msg.agentId)
@@ -706,13 +712,17 @@ async function handleTaskEvent(msg: Extract<StubToHub, { op: 'task' }>): Promise
     if (msg.action === 'create') {
       const allDone = !tasks || [...tasks.values()].every(t => t.status === 'completed')
       const fresh = allDone && (turnEnded.get(key) ?? true)
-      if (fresh) {
+      // see the identical comment in handleSubagentEvent — turnEnded is shared across
+      // trackers, so !tasks must force init regardless of `fresh`.
+      if (fresh || !tasks) {
         tasks = new Map()
         activeTasks.set(key, tasks)
-        taskMessages.delete(key)
+        if (fresh) {
+          taskMessages.delete(key)
+        }
       }
       turnEnded.set(key, false)
-      tasks!.set(msg.taskId, { subject: msg.subject, status: 'pending' })
+      tasks.set(msg.taskId, { subject: msg.subject, status: 'pending' })
       log(`task: create key=${key} taskId=${msg.taskId} fresh=${fresh} subject="${msg.subject}"`)
     } else {
       const existing = tasks?.get(msg.taskId)
