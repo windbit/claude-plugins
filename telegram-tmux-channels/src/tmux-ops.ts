@@ -151,6 +151,12 @@ export async function hasTmuxSession(name: string): Promise<boolean> {
   return (await proc.exited) === 0
 }
 
+// idempotent — used after a worktree delete so a leftover session (bare shell or a
+// still-running claude) doesn't linger with its cwd pointed at a now-deleted directory
+export async function killTmuxSession(name: string): Promise<void> {
+  await tmux('kill-session', '-t', `=${name}`).catch(() => {})
+}
+
 export async function ensureTmuxSession(name: string, dir: string): Promise<boolean> {
   if (await hasTmuxSession(name)) {
     return false

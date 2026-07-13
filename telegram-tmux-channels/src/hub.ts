@@ -21,7 +21,7 @@ import { Router } from './router'
 import { chunk, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES, PHOTO_EXTS } from './chunk'
 import {
   parseOpsCommand, sendKeys, typeLine, restartSession, stopSession, alive,
-  hasTmuxSession, ensureTmuxSession, buildLaunch, shellQuote, ackStartupPrompts,
+  hasTmuxSession, ensureTmuxSession, killTmuxSession, buildLaunch, shellQuote, ackStartupPrompts,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
 import { ansiToHtml } from './ansi-html'
@@ -1455,7 +1455,17 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
       if (binding.hookBranch && groupCfg?.hook?.delete && groupCfg.dir) {
         try {
           await runHookDelete(groupCfg.hook, binding.hookBranch, groupCfg.dir)
-          void say(`${unboundNote}\n🗑 Хук очистки (<code>${escHtml(binding.hookBranch)}</code>) выполнен.`)
+          // The worktree dir just got deleted — a leftover tmux session (bare shell
+          // or a still-running claude) would be left pointed at a dead cwd forever.
+          const name = sessionName(key, binding.dir)
+          const hadSession = await hasTmuxSession(name)
+          if (hadSession) {
+            await killTmuxSession(name)
+          }
+          void say(
+            `${unboundNote}\n🗑 Хук очистки (<code>${escHtml(binding.hookBranch)}</code>) выполнен.` +
+              (hadSession ? `\n🪟 tmux <code>${escHtml(name)}</code> закрыт.` : ''),
+          )
         } catch (e) {
           void say(`${unboundNote}\n⚠️ Хук очистки не удался: ${escHtml(String(e))}`)
         }
