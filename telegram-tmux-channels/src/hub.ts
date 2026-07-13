@@ -1451,27 +1451,25 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
       delete reg[key]
       saveBindings(reg)
       const unboundNote = `🔓 <b>Отвязано</b> <i>(было ${codePath(binding.dir)})</i>`
+      // The hub is what created this tmux session (ensureTmuxSession, in spawnSession) —
+      // it owns tearing it down too, symmetrically, regardless of mode.
+      const name = sessionName(key, binding.dir)
+      const hadSession = await hasTmuxSession(name)
+      if (hadSession) {
+        await killTmuxSession(name)
+      }
+      const tmuxNote = hadSession ? `\n🪟 tmux <code>${escHtml(name)}</code> закрыт.` : ''
       const groupCfg = binding.hookBranch ? loadTrustedGroups()[keyToTarget(key).chat_id] : undefined
       if (binding.hookBranch && groupCfg?.hook?.delete && groupCfg.dir) {
         try {
           await runHookDelete(groupCfg.hook, binding.hookBranch, groupCfg.dir)
-          // The worktree dir just got deleted — a leftover tmux session (bare shell
-          // or a still-running claude) would be left pointed at a dead cwd forever.
-          const name = sessionName(key, binding.dir)
-          const hadSession = await hasTmuxSession(name)
-          if (hadSession) {
-            await killTmuxSession(name)
-          }
-          void say(
-            `${unboundNote}\n🗑 Хук очистки (<code>${escHtml(binding.hookBranch)}</code>) выполнен.` +
-              (hadSession ? `\n🪟 tmux <code>${escHtml(name)}</code> закрыт.` : ''),
-          )
+          void say(`${unboundNote}${tmuxNote}\n🗑 Хук очистки (<code>${escHtml(binding.hookBranch)}</code>) выполнен.`)
         } catch (e) {
-          void say(`${unboundNote}\n⚠️ Хук очистки не удался: ${escHtml(String(e))}`)
+          void say(`${unboundNote}${tmuxNote}\n⚠️ Хук очистки не удался: ${escHtml(String(e))}`)
         }
         return
       }
-      void say(unboundNote)
+      void say(`${unboundNote}${tmuxNote}`)
       return
     }
     // allow
