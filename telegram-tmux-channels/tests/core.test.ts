@@ -158,6 +158,8 @@ describe('tmux-ops', () => {
     })
     expect(parseOpsCommand('/allow 123 456')).toEqual({ cmd: 'allow', arg: '123 456' })
     expect(parseOpsCommand('/status')).toEqual({ cmd: 'status' })
+    expect(parseOpsCommand('/model')).toEqual({ cmd: 'model' })
+    expect(parseOpsCommand('/stop')).toEqual({ cmd: 'stop' })
     expect(parseOpsCommand('compact')).toBeUndefined()
     expect(parseOpsCommand('/unknown x')).toBeUndefined()
   })
@@ -251,9 +253,9 @@ describe('trusted-groups', () => {
     expect(slugFromTopicName('  spaced  ')).toBe('spaced')
     expect(slugFromTopicName('!!!')).toBe('topic')
   })
-  test('slugFromTopicName: keeps non-Latin letters (Cyrillic topic names are the norm here)', () => {
-    expect(slugFromTopicName('продать BTC')).toBe('продать-BTC')
-    expect(slugFromTopicName('Почини баг с логином')).toBe('Почини-баг-с-логином')
+  test('slugFromTopicName: transliterates Cyrillic (Cyrillic topic names are the norm here, but git branches/tmux names need ASCII)', () => {
+    expect(slugFromTopicName('продать BTC')).toBe('prodat-BTC')
+    expect(slugFromTopicName('Почини баг с логином')).toBe('Pochini-bag-s-loginom')
   })
   test('mergeGroupConfig: group overrides win, falls back to defaults, dir optional', () => {
     const defaults: { modes: TrustedGroupMode[]; cmdline: string[]; dir: string } = {
@@ -262,8 +264,8 @@ describe('trusted-groups', () => {
     expect(mergeGroupConfig(defaults, { dir: '/g' })).toEqual({
       dir: '/g', modes: ['folder', 'worktree'], cmdline: ['claude'], hook: undefined, exclude: undefined,
     })
-    expect(mergeGroupConfig(defaults, { modes: ['hook'], hook: { create: '/h.py' } })).toEqual({
-      dir: '/default', modes: ['hook'], cmdline: ['claude'], hook: { create: '/h.py' }, exclude: undefined,
+    expect(mergeGroupConfig(defaults, { modes: ['worktree'], hook: { create: '/h.py' } })).toEqual({
+      dir: '/default', modes: ['worktree'], cmdline: ['claude'], hook: { create: '/h.py' }, exclude: undefined,
     })
     expect(mergeGroupConfig(undefined, {})).toEqual({
       dir: undefined, modes: ['folder'], cmdline: undefined, hook: undefined, exclude: undefined,

@@ -216,7 +216,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'reply',
       description:
-        'Reply on Telegram. Copy chat_id and thread_id (topic_id) from the inbound message tag; with a single binding both may be omitted. Optionally pass reply_to (message_id) for threading, and files (absolute paths) to attach.',
+        'Reply on Telegram. Copy chat_id and thread_id (topic_id) from the inbound message tag; with a single binding both may be omitted. Optionally pass reply_to (message_id) for threading, files (absolute paths) to attach, or voice:true to also speak text as a voice note.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -228,6 +228,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'array',
             items: { type: 'string' },
             description: 'Absolute file paths. Images send as photos; other types as documents. Max 50MB each.',
+          },
+          voice: {
+            type: 'boolean',
+            description: 'Also send text as a spoken voice note (TTS). Use when a spoken reply genuinely fits — not for every message (code/long text reads poorly aloud). Silently ignored if TTS is not configured host-side.',
           },
           format: {
             type: 'string',

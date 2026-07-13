@@ -3,12 +3,12 @@
 
 export type OpsCommand =
   | 'compact' | 'clear' | 'esc' | 'restart' | 'resume' | 'new' | 'status'
-  | 'bind' | 'unbind' | 'allow'
+  | 'bind' | 'unbind' | 'allow' | 'model' | 'stop' | 'screen'
 
 export function parseOpsCommand(
   text: string,
 ): { cmd: OpsCommand; bot?: string; arg?: string } | undefined {
-  const m = /^\/(compact|clear|esc|restart|resume|new|status|bind|unbind|allow)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
+  const m = /^\/(compact|clear|esc|restart|resume|new|status|bind|unbind|allow|model|stop|screen)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
     text.trim(),
   )
   if (!m) {
@@ -132,6 +132,8 @@ export async function sendKeys(pane: string, ...keys: string[]): Promise<void> {
 }
 
 const TYPE_ENTER_GAP_MS = 500
+// Seconds the user gets to answer the exit-confirm via Telegram buttons.
+export const EXIT_CONFIRM_GRACE_S = 10
 
 export async function typeLine(pane: string, text: string): Promise<void> {
   await tmux('send-keys', '-t', pane, '-l', text)
@@ -167,19 +169,33 @@ export async function ensureTmuxSession(name: string, dir: string): Promise<bool
 // risk this guards against doesn't apply there.
 const SYSTEMD_RUN = Bun.which('systemd-run')
 
+// detached tmux defaults to 80×24 — TUI-пикеры (напр. /resume) влезают в 1 строку;
+// задаём человеческий размер, при attach размер клиента всё равно возьмёт верх
+const DETACHED_SIZE = ['-x', '200', '-y', '100']
+
 async function spawnDetachedTmuxServer(name: string, dir: string): Promise<void> {
   if (!SYSTEMD_RUN) {
-    await tmux('new-session', '-d', '-s', name, '-c', dir)
+    await tmux('new-session', '-d', ...DETACHED_SIZE, '-s', name, '-c', dir)
     return
   }
   const unit = `tmux-server-${name.replace(/[^\w.-]/g, '-')}`
   const proc = Bun.spawn(
-    [SYSTEMD_RUN, '--user', '--scope', '--collect', `--unit=${unit}`, '--', 'tmux', 'new-session', '-d', '-s', name, '-c', dir],
+    [SYSTEMD_RUN, '--user', '--scope', '--collect', `--unit=${unit}`, '--', 'tmux', 'new-session', '-d', ...DETACHED_SIZE, '-s', name, '-c', dir],
     { stdout: 'ignore', stderr: 'pipe' },
   )
   if ((await proc.exited) !== 0) {
     throw new Error(`tmux new-session (detached) failed: ${await new Response(proc.stderr).text()}`)
   }
+}
+
+// как capturePane, но с ANSI-кодами (-e) — сырьё для PNG-рендера /screen
+export async function capturePaneAnsi(pane: string): Promise<string> {
+  const proc = Bun.spawn(['tmux', 'capture-pane', '-e', '-p', '-t', pane], {
+    stdout: 'pipe',
+    stderr: 'ignore',
+  })
+  await proc.exited
+  return await new Response(proc.stdout).text()
 }
 
 export async function capturePane(pane: string): Promise<string> {
@@ -224,24 +240,58 @@ export function alive(pid: number): boolean {
   }
 }
 
+// Graceful shutdown: single Ctrl-C first (interrupts a mid-turn agent so /exit
+// lands on an idle prompt instead of the message queue), then /exit, answer the
+// "Exit anyway?" confirm that appears when background shells are alive, wait
+// for the pid to die, escalate to Ctrl-C ×2. Measured: idle exit ~0.6s; busy
+// exit hangs forever on the confirm unless answered — hence the pane polling.
+export async function stopSession(
+  pane: string,
+  pid: number,
+  log: (s: string) => void,
+): Promise<boolean> {
+  log(`stop: pane=${pane} pid=${pid}`)
+  await sendKeys(pane, 'C-c')
+  await sleep(1500)
+  await typeLine(pane, '/exit')
+  // Graceful window, 1s granularity. The background-shell confirm ("Exit
+  // anyway / Move to background / Stay") is surfaced to Telegram as buttons by
+  // the hub's picker bridge — give the user EXIT_CONFIRM_GRACE_S to answer it
+  // (and see what's running); unanswered → Enter confirms the preselected
+  // "1. Exit anyway".
+  let confirmSeenAt: number | undefined
+  for (let i = 0; i < 30 && alive(pid); i++) {
+    await sleep(1000)
+    if (!alive(pid)) {
+      break
+    }
+    const text = await capturePane(pane).catch(() => '')
+    if (text.includes('Exit anyway')) {
+      confirmSeenAt ??= i
+      if (i - confirmSeenAt >= EXIT_CONFIRM_GRACE_S) {
+        log('stop: confirm unanswered → Enter')
+        await sendKeys(pane, 'Enter')
+        confirmSeenAt = undefined // reappearing dialog gets a fresh grace window
+      }
+    }
+  }
+  if (alive(pid)) {
+    log('stop: still alive → Ctrl-C ×2')
+    await sendKeys(pane, 'C-c')
+    await sleep(1000)
+    await sendKeys(pane, 'C-c')
+    await sleep(6000)
+  }
+  return !alive(pid)
+}
+
 export async function restartSession(
   pane: string,
   pid: number,
   cmdline: string[],
   log: (s: string) => void,
 ): Promise<void> {
-  log(`restart: pane=${pane} pid=${pid}`)
-  await typeLine(pane, '/exit')
-  for (let i = 0; i < 35 && alive(pid); i++) {
-    await sleep(2000)
-  }
-  if (alive(pid)) {
-    log('restart: still alive → Ctrl-C ×2')
-    await sendKeys(pane, 'C-c')
-    await sleep(1000)
-    await sendKeys(pane, 'C-c')
-    await sleep(6000)
-  }
+  await stopSession(pane, pid, log)
   await sleep(3000)
   const cmd = relaunchCommand(cmdline)
   log(`restart: relaunch ${cmd}`)

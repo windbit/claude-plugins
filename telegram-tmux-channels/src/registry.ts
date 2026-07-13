@@ -13,7 +13,7 @@ export type BindingEntry = {
   allow?: string[]
   cmdline?: string[]
   sessionId?: string // claude conversation id — --resume target when this binding's dir is shared
-  hookBranch?: string // set for auto-topic mode:hook bindings — /unbind runs the group's hook.delete on this
+  hookBranch?: string // set for auto-topic worktree bindings created via a group hook — /unbind runs hook.delete on this
 }
 
 export function loadBindings(): Record<string, BindingEntry> {

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { parsePicker, checkedIndexes } from '../src/picker'
+import { parsePicker, checkedIndexes, parseResumeList } from '../src/picker'
 
 const fx = (name: string) => readFileSync(join(import.meta.dir, 'fixtures', name), 'utf8')
 
@@ -59,5 +59,24 @@ describe('checkedIndexes', () => {
   })
   test('single без чекбоксов → []', () => {
     expect(checkedIndexes(fx('ask-single.txt'))).toEqual([])
+  })
+})
+
+describe('parseResumeList', () => {
+  test('реальный снимок /resume: строки, курсор, total', () => {
+    const l = parseResumeList(fx('resume-list.txt'))!
+    expect(l.total).toBe('1 of 27')
+    expect(l.cursor).toBe(0)
+    expect(l.rows.map(r => r.title)).toEqual([
+      '(session)',
+      'закоммить изменения в homelab и плагине',
+      'Напомнить о работе последних двух дней',
+      'Set up Telegram binding for Claude server',
+    ])
+    expect(l.rows[1].meta).toBe('1 day ago · main · 6.9MB')
+  })
+  test('обычный экран без списка → undefined', () => {
+    expect(parseResumeList(fx('model-single.txt'))).toBeUndefined()
+    expect(parseResumeList('')).toBeUndefined()
   })
 })

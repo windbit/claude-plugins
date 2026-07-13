@@ -26,6 +26,10 @@ export type StubToHub =
   // Stop = the turn ended (Claude finished responding) — closes the current batch so the
   // NEXT subagent start opens a fresh message instead of appending to a finished one
   | { op: 'subagent'; action: 'turnend'; bindingKeys: string[] }
+  // TaskCreate/TaskUpdate (the todo-list tool) — unlike subagents, id/subject/status come
+  // straight off one event each, no promptId correlation needed
+  | { op: 'task'; action: 'create'; bindingKeys: string[]; taskId: string; subject: string }
+  | { op: 'task'; action: 'update'; bindingKeys: string[]; taskId: string; status: string }
 
 export type HubToStub =
   | { op: 'event'; kind: 'message'; content: string; meta: Record<string, string> }

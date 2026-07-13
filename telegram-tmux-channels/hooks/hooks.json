@@ -2,7 +2,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Agent|Task",
+        "matcher": "^(Agent|Task)$",
         "hooks": [
           {
             "type": "command",
@@ -33,6 +33,30 @@
           {
             "type": "command",
             "command": "bun ${CLAUDE_PLUGIN_ROOT}/src/subagent-hook.ts stop",
+            "timeout": 3,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^TaskCreate$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun ${CLAUDE_PLUGIN_ROOT}/src/subagent-hook.ts task-create",
+            "timeout": 3,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "^TaskUpdate$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun ${CLAUDE_PLUGIN_ROOT}/src/subagent-hook.ts task-update",
             "timeout": 3,
             "async": true
           }

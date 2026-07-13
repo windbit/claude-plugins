@@ -78,11 +78,7 @@ export async function resolveModeDir(
   if (mode === 'folder') {
     return baseDir
   }
-  if (mode === 'worktree') {
-    return resolveWorktreeDir(baseDir, branch)
-  }
-  if (!hook) {
-    throw new Error('mode: hook requires "hook" in trusted-groups.json')
-  }
-  return resolveHookDir(hook, branch, baseDir)
+  // worktree mode: a configured hook replaces plain `git worktree add` (e.g. a wrapper
+  // that also provisions a per-branch DB) — no hook, no customization needed, just git.
+  return hook ? resolveHookDir(hook, branch, baseDir) : resolveWorktreeDir(baseDir, branch)
 }

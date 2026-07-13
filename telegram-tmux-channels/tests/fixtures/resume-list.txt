@@ -1,0 +1,20 @@
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Resume session (1 of 27)
+   ╭────────────────────────────────────────────────────────────────────────╮
+   │ ⌕ Search…                                                              │
+   ╰────────────────────────────────────────────────────────────────────────╯
+     homelab
+
+   ❯ (session)
+     3 minutes ago · master · 53.3KB
+
+     закоммить изменения в homelab и плагине
+     1 day ago · main · 6.9MB
+
+     Напомнить о работе последних двух дней
+     2 days ago · master · 9.3MB
+
+   ↓ Set up Telegram binding for Claude server
+     3 days ago · main · 604KB
+
+     Ctrl+A to show all projects · Ctrl+B to only show current branch · Space to preview · Ctrl+R to rename · Type to search · Esc to cancel

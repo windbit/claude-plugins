@@ -1,7 +1,7 @@
 // Claude stores each conversation as ~/.claude/projects/<slug>/<session-id>.jsonl.
 // The hub isn't told the id directly — it snapshots that dir before a fresh launch
 // and polls for the new file afterward, same slug rule Claude Code itself uses.
-import { readdirSync, statSync } from 'fs'
+import { readdirSync, statSync, openSync, readSync, closeSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
@@ -26,6 +26,45 @@ export function jsonlMtimes(dir: string): Map<string, number> {
     } catch {}
   }
   return out
+}
+
+// First user text of a session, for resume-picker button labels. Reads only the
+// head of the file — enough for a label, cheap on multi-MB transcripts.
+function firstUserText(dir: string, id: string): string {
+  try {
+    const fd = openSync(join(claudeProjectDir(dir), `${id}.jsonl`), 'r')
+    const buf = Buffer.alloc(65536)
+    const n = readSync(fd, buf, 0, buf.length, 0)
+    closeSync(fd)
+    for (const line of buf.toString('utf8', 0, n).split('\n')) {
+      try {
+        const j = JSON.parse(line) as {
+          type?: string
+          message?: { content?: string | Array<{ type?: string; text?: string }> }
+        }
+        if (j.type !== 'user') {
+          continue
+        }
+        const c = j.message?.content
+        const raw = typeof c === 'string' ? c : (c?.find(p => p.type === 'text')?.text ?? '')
+        // channel/system tags wrap real text — strip them for the label
+        const text = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+        if (text) {
+          return text
+        }
+      } catch {}
+    }
+  } catch {}
+  return ''
+}
+
+export type RecentSession = { id: string; mtime: number; snippet: string }
+
+export function recentSessions(dir: string, limit = 5): RecentSession[] {
+  return [...jsonlMtimes(dir).entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([id, mtime]) => ({ id, mtime, snippet: firstUserText(dir, id) }))
 }
 
 export async function captureNewSessionId(

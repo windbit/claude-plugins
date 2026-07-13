@@ -41,7 +41,7 @@ export function readLimits(dir: string, now = Date.now()): Limits | undefined {
 
 export function fmtDuration(secs: number): string {
   if (secs <= 0) {
-    return '0m'
+    return '0м'
   }
   const d = Math.floor(secs / 86400)
   const h = Math.floor((secs % 86400) / 3600)

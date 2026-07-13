@@ -59,7 +59,7 @@ function isChrome(t: string): boolean {
   return false
 }
 
-function fnv1a(s: string): string {
+export function fnv1a(s: string): string {
   let h = 0x811c9dc5
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i)
@@ -133,6 +133,60 @@ export function parsePicker(text: string): Picker | undefined {
     ...(custom ? { customIndex: custom.index } : {}),
     hash: fnv1a(title + '|' + options.map(o => `${o.index}:${o.label}`).join('|')),
   }
+}
+
+// ── native /resume session list ─────────────────────────────────────────
+// Full-screen searchable TUI (not a numbered picker): rows are a title line
+// (❯ marks the cursor, ↓/↑ mark scroll-more) followed by a metadata line
+// "N <unit> ago · branch · size". Driven by arrow keys, not digits.
+
+export type ResumeRow = { title: string; meta: string }
+// pos/count — абсолютная позиция курсора из заголовка "(N of M)"; cursor — индекс ❯ среди видимых строк
+export type ResumeList = { total: string; pos: number; count: number; cursor: number; rows: ResumeRow[] }
+
+// счётчик "(N of M)" пропадает, когда весь список влезает в viewport — тогда pos/count берём из видимых строк
+const RESUME_HEADER_RE = /Resume session(?: \((\d+) of (\d+)\))?\s*$/
+const RESUME_META_RE = /ago · .+ · \S+B\s*$/
+
+export function parseResumeList(text: string): ResumeList | undefined {
+  const lines = text.split('\n')
+  // TUI рисуется внизу экрана — ищем с конца, чтобы не поймать похожий текст в транскрипте
+  let h = -1
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (RESUME_HEADER_RE.test(lines[i])) {
+      h = i
+      break
+    }
+  }
+  if (h < 0) {
+    return undefined
+  }
+  const hm = RESUME_HEADER_RE.exec(lines[h])!
+  const rows: ResumeRow[] = []
+  let cursor = -1
+  for (let i = h + 1; i < lines.length; i++) {
+    if (lines[i].includes('Esc to cancel')) {
+      break
+    }
+    if (!RESUME_META_RE.test(lines[i])) {
+      continue
+    }
+    const t = lines[i - 1] ?? ''
+    const title = t.replace(/^\s*[❯↓↑]\s*/, '').trim()
+    if (!title) {
+      continue
+    }
+    if (/^\s*❯/.test(t)) {
+      cursor = rows.length
+    }
+    rows.push({ title, meta: lines[i].trim() })
+  }
+  if (rows.length === 0 || cursor < 0) {
+    return undefined
+  }
+  const pos = hm[1] ? Number(hm[1]) : cursor + 1
+  const count = hm[2] ? Number(hm[2]) : rows.length
+  return { total: hm[1] ? `${hm[1]} of ${hm[2]}` : String(rows.length), pos, count, cursor, rows }
 }
 
 export function checkedIndexes(text: string): number[] {

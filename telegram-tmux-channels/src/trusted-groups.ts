@@ -6,9 +6,11 @@ import { safeJsonParse } from './util'
 
 export const TRUSTED_GROUPS_FILE = join(STATE_DIR, 'trusted-groups.json')
 
-export type TrustedGroupMode = 'folder' | 'worktree' | 'hook'
+export type TrustedGroupMode = 'folder' | 'worktree'
 
-// shell command templates — {branch}/{dir} get substituted, run via `sh -c`
+// optional worktree-mode customization: shell command templates ({branch}/{dir}
+// substituted, run via `sh -c`) that replace `git worktree add`/`remove` — e.g. a
+// wrapper that also provisions a per-branch DB. No hook configured → plain git worktree.
 export type HookConfig = { create: string; delete?: string }
 
 export type TrustedGroupConfig = {
@@ -22,7 +24,6 @@ export type TrustedGroupConfig = {
 export const MODE_LABEL: Record<TrustedGroupMode, string> = {
   folder: '📁 Папка по умолчанию',
   worktree: '🌿 Worktree (своя git-ветка)',
-  hook: '🪝 Hook',
 }
 
 const DEFAULT_MODES: TrustedGroupMode[] = ['folder']
@@ -66,8 +67,31 @@ export function isExcludedTopic(cfg: TrustedGroupConfig, topicId: number, topicN
   return cfg.exclude?.nameContains?.some(s => topicName.includes(s)) ?? false
 }
 
-// topic title → branch/worktree slug. Keep letters from any script (Cyrillic
-// topic names are the common case here) — only collapse genuinely unsafe chars.
+// Cyrillic → Latin, common web scheme. The slug becomes a git branch name (and,
+// via the worktree dir, a tmux session name) — non-ASCII there is a real foot-gun
+// (tool/shell/filesystem compat), so transliterate rather than pass it through raw.
+const CYRILLIC_TRANSLIT: Record<string, string> = {
+  а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'yo', ж: 'zh', з: 'z', и: 'i',
+  й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't',
+  у: 'u', ф: 'f', х: 'kh', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'shch', ъ: '', ы: 'y',
+  ь: '', э: 'e', ю: 'yu', я: 'ya',
+}
+
+function transliterate(name: string): string {
+  return [...name]
+    .map(ch => {
+      const lower = ch.toLowerCase()
+      const t = CYRILLIC_TRANSLIT[lower]
+      if (t === undefined) {
+        return ch
+      }
+      return ch === lower ? t : t.charAt(0).toUpperCase() + t.slice(1)
+    })
+    .join('')
+}
+
+// topic title → branch/worktree slug — transliterated, then only genuinely safe
+// chars kept (everything else collapses to a dash).
 export function slugFromTopicName(name: string): string {
-  return name.trim().replace(/[^\p{L}\p{N}/_.-]+/gu, '-').replace(/^-+|-+$/g, '') || 'topic'
+  return transliterate(name.trim()).replace(/[^\p{L}\p{N}/_.-]+/gu, '-').replace(/^-+|-+$/g, '') || 'topic'
 }
