@@ -19,7 +19,7 @@ const bindingKeys = (process.env.TELEGRAM_BINDING_KEYS ?? '')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean)
-const VALID_MODES = new Set(['describe', 'start', 'stop', 'turnend', 'task-create', 'task-update'])
+const VALID_MODES = new Set(['describe', 'start', 'stop', 'turnend', 'task-create', 'task-update', 'skill'])
 
 async function main(): Promise<void> {
   if (bindingKeys.length === 0 || !mode || !VALID_MODES.has(mode)) {
@@ -59,6 +59,14 @@ async function main(): Promise<void> {
       return
     }
     msg = { op: 'task', action: 'update', bindingKeys, taskId, status }
+  } else if (mode === 'skill') {
+    const toolInput = data.tool_input as Record<string, unknown> | undefined
+    const skill = String(toolInput?.skill ?? '')
+    if (!skill) {
+      return
+    }
+    const args = toolInput?.args ? String(toolInput.args) : undefined
+    msg = { op: 'skill', bindingKeys, skill, ...(args ? { args } : {}) }
   } else if (mode === 'describe') {
     const promptId = String(data.prompt_id ?? '')
     const toolInput = data.tool_input as Record<string, unknown> | undefined

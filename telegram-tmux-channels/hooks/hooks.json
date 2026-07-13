@@ -11,6 +11,17 @@
             "async": true
           }
         ]
+      },
+      {
+        "matcher": "^Skill$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun ${CLAUDE_PLUGIN_ROOT}/src/subagent-hook.ts skill",
+            "timeout": 3,
+            "async": true
+          }
+        ]
       }
     ],
     "SubagentStart": [

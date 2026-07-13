@@ -124,12 +124,17 @@ describe('limits', () => {
     }
     const lines = formatLimits(l, now)
     expect(lines).toEqual([
-      'контекст 34%',
-      '5ч 43%, сброс 2ч30м',
-      '7д 30%, сброс 1д0ч',
+      'Контекст: 34%',
+      'Сессия 5ч: 43%, сброс 2ч30м',
+      'Сессия 7д: 30%, сброс 1д0ч',
       '(данные 10м назад)',
     ])
     expect(formatLimits({ ageMs: 0 }, now)).toEqual([])
+  })
+  test('formatLimits: rounds floating-point percentages from upstream', () => {
+    const now = 1_000_000_000_000
+    const lines = formatLimits({ contextPct: 90, fiveHourPct: 7.000000000000001, ageMs: 0 }, now)
+    expect(lines).toEqual(['Контекст: 90%', 'Сессия 5ч: 7%'])
   })
 })
 

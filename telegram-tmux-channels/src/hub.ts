@@ -572,6 +572,16 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
   if (!target) {
     return
   }
+  // Reserve the slot synchronously before the await below — otherwise an overlapping
+  // pollScreens tick for the same pane sees `existing === undefined` too and double-sends.
+  activePickers.set(pane, {
+    chatId: target.chatId,
+    ...(target.threadId != null ? { threadId: target.threadId } : {}),
+    msgId: -1,
+    hash: picker.hash,
+    token: picker.hash,
+    picker,
+  })
   const sent = await bot.api
     .sendMessage(target.chatId, `❓ <b>${escHtml(picker.title || 'Question')}</b>`, {
       ...(target.threadId != null ? { message_thread_id: target.threadId } : {}),
@@ -589,6 +599,8 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
       token: picker.hash,
       picker,
     })
+  } else if (activePickers.get(pane)?.msgId === -1) {
+    activePickers.delete(pane) // send failed — don't leave a permanently-unresolvable placeholder
   }
 }
 
@@ -731,12 +743,65 @@ async function handleTaskEvent(msg: Extract<StubToHub, { op: 'task' }>): Promise
   }
 }
 
+// Skill invocations — same per-turn self-editing message as tasks, но append-only:
+// у Skill нет жизненного цикла, одно PreToolUse-событие на вызов.
+type SkillCall = { skill: string; args?: string }
+const activeSkills = new Map<string, SkillCall[]>() // key -> calls this turn
+const skillMessages = new Map<string, { chatId: string; msgId: number }>()
+
+function renderSkillText(items: SkillCall[]): string {
+  return items.map(i => `🧩 Скилл: <b>${escHtml(i.skill)}</b>${i.args ? ` — <i>${escHtml(i.args)}</i>` : ''}`).join('\n')
+}
+
+async function handleSkillEvent(msg: Extract<StubToHub, { op: 'skill' }>): Promise<void> {
+  for (const key of msg.bindingKeys) {
+    let skills = activeSkills.get(key)
+    if (!skills || (turnEnded.get(key) ?? true)) {
+      skills = []
+      activeSkills.set(key, skills)
+      skillMessages.delete(key)
+    }
+    turnEnded.set(key, false)
+    skills.push({ skill: msg.skill, ...(msg.args ? { args: msg.args } : {}) })
+    log(`skill: key=${key} skill=${msg.skill}${msg.args ? ` args="${msg.args}"` : ''}`)
+    const text = renderSkillText(skills)
+    const tracked = skillMessages.get(key)
+    if (!tracked) {
+      const target = keyToTarget(key)
+      const sent = await bot.api
+        .sendMessage(target.chat_id, text, {
+          ...(target.thread_id != null ? { message_thread_id: target.thread_id } : {}),
+          parse_mode: 'HTML',
+        })
+        .catch(() => undefined)
+      if (sent) {
+        skillMessages.set(key, { chatId: target.chat_id, msgId: sent.message_id })
+      }
+      continue
+    }
+    await bot.api.editMessageText(tracked.chatId, tracked.msgId, text, { parse_mode: 'HTML' }).catch(() => {})
+  }
+}
+
 // One capture per live pane per tick, fanned out to screen detectors.
 // last captured frame per pane — a change since the previous poll means the
 // agent (or something) is actively doing something, worth a "typing…" nudge
 const lastPaneText = new Map<string, string>()
 
+let pollingScreens = false
 async function pollScreens(): Promise<void> {
+  if (pollingScreens) {
+    return // previous tick still running (many bound sessions can outrun SCREEN_POLL_MS) — skip, don't overlap
+  }
+  pollingScreens = true
+  try {
+    await pollScreensOnce()
+  } finally {
+    pollingScreens = false
+  }
+}
+
+async function pollScreensOnce(): Promise<void> {
   const seen = new Set<string>()
   for (const conn of router.all()) {
     const s = router.get(conn)
@@ -861,6 +926,9 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
   }
   if (msg.op === 'task') {
     await handleTaskEvent(msg)
+  }
+  if (msg.op === 'skill') {
+    await handleSkillEvent(msg)
   }
 }
 
@@ -1458,7 +1526,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
     if (limits) {
       const parts = formatLimits(limits, Date.now())
       if (parts.length > 0) {
-        lines.push('', ...parts.map(p => `<code>${escHtml(p)}</code>`))
+        lines.push('', ...parts.map(escHtml))
       }
     }
     if (binding.allow?.length) {

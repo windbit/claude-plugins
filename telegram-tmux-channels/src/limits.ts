@@ -59,18 +59,23 @@ export function fmtUntil(resetsAtSec: number, nowMs: number): string {
   return fmtDuration(resetsAtSec - Math.floor(nowMs / 1000))
 }
 
+// upstream sends raw floats (e.g. 7.000000000000001) — round for display
+function fmtPct(pct: number): string {
+  return `${Math.round(pct)}%`
+}
+
 export function formatLimits(l: Limits, nowMs: number): string[] {
   const lines: string[] = []
   if (l.contextPct != null) {
-    lines.push(`контекст ${l.contextPct}%`)
+    lines.push(`Контекст: ${fmtPct(l.contextPct)}`)
   }
   if (l.fiveHourPct != null) {
     const reset = l.fiveHourResetsAt != null ? `, сброс ${fmtUntil(l.fiveHourResetsAt, nowMs)}` : ''
-    lines.push(`5ч ${l.fiveHourPct}%${reset}`)
+    lines.push(`Сессия 5ч: ${fmtPct(l.fiveHourPct)}${reset}`)
   }
   if (l.sevenDayPct != null) {
     const reset = l.sevenDayResetsAt != null ? `, сброс ${fmtUntil(l.sevenDayResetsAt, nowMs)}` : ''
-    lines.push(`7д ${l.sevenDayPct}%${reset}`)
+    lines.push(`Сессия 7д: ${fmtPct(l.sevenDayPct)}${reset}`)
   }
   if (lines.length === 0) {
     return []

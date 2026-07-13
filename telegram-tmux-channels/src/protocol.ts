@@ -30,6 +30,8 @@ export type StubToHub =
   // straight off one event each, no promptId correlation needed
   | { op: 'task'; action: 'create'; bindingKeys: string[]; taskId: string; subject: string }
   | { op: 'task'; action: 'update'; bindingKeys: string[]; taskId: string; status: string }
+  // Skill tool invocation (PreToolUse ^Skill$) — no lifecycle, one event per call
+  | { op: 'skill'; bindingKeys: string[]; skill: string; args?: string }
 
 export type HubToStub =
   | { op: 'event'; kind: 'message'; content: string; meta: Record<string, string> }
