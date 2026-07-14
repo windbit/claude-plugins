@@ -1632,7 +1632,8 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
           }
           void say('♻️ <b>Перезапускаю</b> сессию…')
           expectedDisconnect.add(key)
-          void restartSession(s.pane, s.pid, s.cmdline, log)
+          const restartKeys = s.bindingKeys?.length ? s.bindingKeys : [key]
+          void restartSession(s.pane, s.pid, s.cmdline, restartKeys, log)
             .then(() => say('♻️ Перезапуск отправлен.'))
             .catch(e => say(`⚠️ Рестарт не удался: ${escHtml(String(e))}`))
             .finally(() => setTimeout(() => expectedDisconnect.delete(key), 90_000))

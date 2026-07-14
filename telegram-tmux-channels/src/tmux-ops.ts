@@ -295,11 +295,19 @@ export async function restartSession(
   pane: string,
   pid: number,
   cmdline: string[],
+  bindingKeys: string[],
   log: (s: string) => void,
 ): Promise<void> {
   await stopSession(pane, pid, log)
   await sleep(3000)
-  const cmd = relaunchCommand(cmdline)
+  // TELEGRAM_BINDING_KEYS is a per-command env prefix, not a shell export — the
+  // original launch's binding identity dies with the old process unless the relaunch
+  // command re-adds it. Without this, the new session's bindingKeys comes back empty:
+  // picker routing falls back to "first key bound to this dir" (wrong whenever another
+  // key shares the same directory) and the subagent/task/skill status hooks go silent
+  // entirely (subagent-hook.ts no-ops with no bindingKeys).
+  const envPrefix = bindingKeys.length ? `TELEGRAM_BINDING_KEYS=${shellQuote([bindingKeys.join(',')])} ` : ''
+  const cmd = envPrefix + relaunchCommand(cmdline)
   log(`restart: relaunch ${cmd}`)
   await typeLine(pane, cmd)
   await ackStartupPrompts(pane, log)
