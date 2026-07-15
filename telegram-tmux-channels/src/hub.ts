@@ -20,7 +20,7 @@ import { encode, makeLineDecoder, type StubToHub, type HubToStub, type SessionIn
 import { Router } from './router'
 import { chunk, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES, PHOTO_EXTS } from './chunk'
 import {
-  parseOpsCommand, sendKeys, typeLine, restartSession, stopSession, alive,
+  parseOpsCommand, parseCompaction, sendKeys, typeLine, selectOption, restartSession, stopSession, alive,
   hasTmuxSession, ensureTmuxSession, killTmuxSession, buildLaunch, shellQuote, ackStartupPrompts,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
@@ -693,6 +693,62 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
   }
 }
 
+// Compaction progress, scraped from the pane (no hook exposes the %): Claude Code renders
+// "✻ Compacting conversation… (elapsed)" + a "▰▱… NN%" bar during /compact and auto-compact.
+// Mirror it into one self-editing Telegram message per pane. capturePane occasionally catches
+// a mid-redraw frame WITHOUT the line, so finalize only after 2 consecutive misses (anti-flicker).
+type CompactState = { chatId: string; threadId?: number; msgId: number; lastPct: number; misses: number }
+const compactMessages = new Map<string, CompactState>() // key = pane
+
+function renderCompactBar(pct: number, elapsed?: string): string {
+  const filled = Math.max(0, Math.min(10, Math.round(pct / 10)))
+  const bar = '▰'.repeat(filled) + '▱'.repeat(10 - filled)
+  return `🗜 <b>Компакция</b> ${bar} ${pct}%${elapsed ? ` <i>(${escHtml(elapsed)})</i>` : ''}`
+}
+
+async function handleCompaction(pane: string, session: SessionInfo, text: string): Promise<void> {
+  const prog = parseCompaction(text)
+  const existing = compactMessages.get(pane)
+  if (prog) {
+    if (!existing) {
+      const target = pickerChatFor(session)
+      if (!target) {
+        return
+      }
+      // reserve the slot synchronously so an overlapping tick doesn't double-send
+      compactMessages.set(pane, { chatId: target.chatId, ...(target.threadId != null ? { threadId: target.threadId } : {}), msgId: -1, lastPct: prog.pct, misses: 0 })
+      const sent = await bot.api
+        .sendMessage(target.chatId, renderCompactBar(prog.pct, prog.elapsed), {
+          ...(target.threadId != null ? { message_thread_id: target.threadId } : {}),
+          parse_mode: 'HTML',
+        })
+        .catch(() => undefined)
+      if (sent) {
+        compactMessages.set(pane, { chatId: target.chatId, ...(target.threadId != null ? { threadId: target.threadId } : {}), msgId: sent.message_id, lastPct: prog.pct, misses: 0 })
+      } else if (compactMessages.get(pane)?.msgId === -1) {
+        compactMessages.delete(pane)
+      }
+      return
+    }
+    existing.misses = 0
+    if (existing.msgId === -1 || prog.pct === existing.lastPct) {
+      return // still sending, or bar hasn't moved — skip the edit (Telegram rate-limits edits)
+    }
+    existing.lastPct = prog.pct
+    await bot.api
+      .editMessageText(existing.chatId, existing.msgId, renderCompactBar(prog.pct, prog.elapsed), { parse_mode: 'HTML' })
+      .catch(() => {})
+  } else if (existing && existing.msgId !== -1) {
+    if (++existing.misses < 2) {
+      return // tolerate a single flicker frame before declaring it done
+    }
+    compactMessages.delete(pane)
+    await bot.api
+      .editMessageText(existing.chatId, existing.msgId, '✅ <b>Компакция готова.</b>', { parse_mode: 'HTML' })
+      .catch(() => {})
+  }
+}
+
 // Task-list tracking, fed by TaskCreate/TaskUpdate hooks — same self-editing-message and
 // same turn-boundary idea as subagents above (reuses turnEnded), but no promptId dance:
 // id/subject/status come straight off one PostToolUse event each.
@@ -821,6 +877,7 @@ async function pollScreensOnce(): Promise<void> {
     seen.add(s.pane)
     const text = await capturePane(s.pane).catch(() => '')
     await detectPicker(s.pane, s, text)
+    await handleCompaction(s.pane, s, text)
     const prev = lastPaneText.get(s.pane)
     // subagents running = definitely busy, even on ticks where the visible screen
     // (e.g. just an elapsed-time counter) happens to render identically to the last poll
@@ -841,6 +898,11 @@ async function pollScreensOnce(): Promise<void> {
   for (const pane of [...lastPaneText.keys()]) {
     if (!seen.has(pane)) {
       lastPaneText.delete(pane)
+    }
+  }
+  for (const pane of [...compactMessages.keys()]) {
+    if (!seen.has(pane)) {
+      compactMessages.delete(pane) // session gone — drop the in-flight progress message
     }
   }
 }
@@ -871,7 +933,7 @@ async function handlePickCallback(
     .catch(() => {})
   const labelOf = (i: number) => ap.picker.options.find(o => o.index === i)?.label ?? String(i)
   if (action.kind === 'opt' && ap.picker.mode === 'single') {
-    await sendKeys(pane, String(action.index))
+    await selectOption(pane, action.index)
     await resolvePickerMessage(ap, `✅ <b>${escHtml(labelOf(action.index))}</b>`)
     activePickers.delete(pane)
     typing(ap.chatId, ap.threadId) // agent resumes on the answer
@@ -886,7 +948,7 @@ async function handlePickCallback(
   } else if (action.kind === 'submit') {
     const chosen = checkedIndexes(await capturePane(pane).catch(() => '')).map(labelOf)
     await sendKeys(pane, 'Right') // → review screen
-    await sendKeys(pane, '1') // Submit answers
+    await selectOption(pane, 1) // Submit answers
     await resolvePickerMessage(ap, `✅ <b>${chosen.length ? escHtml(chosen.join(', ')) : '—'}</b>`)
     activePickers.delete(pane)
     typing(ap.chatId, ap.threadId) // agent resumes on the submitted answers
@@ -1559,7 +1621,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
     return
   }
 
-  if (cmd === 'compact' || cmd === 'clear' || cmd === 'esc' || cmd === 'restart' || cmd === 'model' || cmd === 'stop' || cmd === 'screen') {
+  if (cmd === 'compact' || cmd === 'clear' || cmd === 'esc' || cmd === 'enter' || cmd === 'restart' || cmd === 'model' || cmd === 'stop' || cmd === 'screen') {
     if (live.length === 0) {
       void say('⚠️ Нет живой сессии. Попробуй <code>/resume</code>.')
       return
@@ -1580,6 +1642,11 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
         } else if (cmd === 'esc') {
           await sendKeys(s.pane, 'Escape')
           void say('⎋ <b>Esc</b> отправлен.')
+        } else if (cmd === 'enter') {
+          // Сабмитнуть то, что уже в строке ввода pane (напр. /compact, который
+          // набрался, но не отправился) — голый Enter, без набора текста.
+          await sendKeys(s.pane, 'Enter')
+          void say('⏎ <b>Enter</b> отправлен.')
         } else if (cmd === 'screen') {
           // Universal 1:1 view of the pane — the escape hatch for any TUI state
           // the picker bridge doesn't recognize. PNG через headless chrome
@@ -2105,6 +2172,7 @@ void (async () => {
             { command: 'compact', description: 'Отправить /compact в сессию' },
             { command: 'clear', description: 'Очистить историю сессии' },
             { command: 'esc', description: 'Прервать текущий ход' },
+            { command: 'enter', description: 'Отправить Enter (сабмитнуть строку ввода)' },
             { command: 'model', description: 'Выбрать модель (интерактивно, кнопками)' },
             { command: 'stop', description: 'Остановить сессию (graceful /exit → Ctrl-C)' },
             { command: 'restart', description: 'Аккуратный перезапуск сессии' },

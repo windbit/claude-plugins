@@ -2,13 +2,13 @@
 // lives outside claude, so /restart runs inline (graceful /exit → wait → relaunch).
 
 export type OpsCommand =
-  | 'compact' | 'clear' | 'esc' | 'restart' | 'resume' | 'new' | 'status'
+  | 'compact' | 'clear' | 'esc' | 'enter' | 'restart' | 'resume' | 'new' | 'status'
   | 'bind' | 'unbind' | 'allow' | 'model' | 'stop' | 'screen'
 
 export function parseOpsCommand(
   text: string,
 ): { cmd: OpsCommand; bot?: string; arg?: string } | undefined {
-  const m = /^\/(compact|clear|esc|restart|resume|new|status|bind|unbind|allow|model|stop|screen)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
+  const m = /^\/(compact|clear|esc|enter|restart|resume|new|status|bind|unbind|allow|model|stop|screen)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
     text.trim(),
   )
   if (!m) {
@@ -19,6 +19,26 @@ export function parseOpsCommand(
     ...(m[2] ? { bot: m[2] } : {}),
     ...(m[3] ? { arg: m[3] } : {}),
   }
+}
+
+// Parse Claude Code's compaction progress out of a pane snapshot. The live UI renders
+// "✻ Compacting conversation… (elapsed)" with the "▰▱… NN%" bar on the very next line, in
+// the bottom status area. Requiring that adjacency + only scanning the last lines avoids
+// false-triggering when those words merely appear as scrollback CONTENT (e.g. a session
+// discussing compaction, or showing this feature's own code). Pure — tested in core.test.ts.
+export function parseCompaction(text: string): { pct: number; elapsed?: string } | undefined {
+  const lines = text.split('\n').map(l => l.trimEnd()).filter(l => l !== '').slice(-10)
+  const i = lines.findIndex(l => /Compacting conversation/.test(l))
+  if (i === -1) {
+    return undefined
+  }
+  const barLine = [lines[i + 1], lines[i + 2]].find(l => l !== undefined && /[▰▱]{5,}\s*\d+%/.test(l))
+  if (!barLine) {
+    return undefined // "Compacting conversation" without an adjacent bar = it's content, not the live UI
+  }
+  const pct = Number(barLine.match(/[▰▱]{5,}\s*(\d+)%/)![1])
+  const el = lines[i].match(/\(([^)]+)\)/)
+  return { pct, ...(el ? { elapsed: el[1] } : {}) }
 }
 
 export function shellQuote(args: string[]): string {
@@ -141,6 +161,17 @@ export async function typeLine(pane: string, text: string): Promise<void> {
   // (ccgram learned this) — let the text settle before Enter.
   await sleep(TYPE_ENTER_GAP_MS)
   await tmux('send-keys', '-t', pane, 'Enter')
+}
+
+// A picker's numbered options are footer'd "Enter to select · ↑/↓ to navigate" — the
+// digit alone only moves the cursor, same as an arrow key; Enter confirms. Sending
+// just the digit leaves the picker sitting open (observed 2026-07-15: AskUserQuestion
+// re-rendered on every tap — each digit nudged the cursor, producing a new hash the
+// hub treated as a fresh picker — until Claude Code gave up and reported "declined").
+export async function selectOption(pane: string, index: number): Promise<void> {
+  await sendKeys(pane, String(index))
+  await sleep(TYPE_ENTER_GAP_MS)
+  await sendKeys(pane, 'Enter')
 }
 
 export async function hasTmuxSession(name: string): Promise<boolean> {
