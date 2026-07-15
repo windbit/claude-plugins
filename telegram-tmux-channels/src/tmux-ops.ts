@@ -80,6 +80,21 @@ export function parseError(text: string): string | undefined {
   return undefined
 }
 
+// Running-workflow status, scraped from the pane (hooks only expose "workflow-subagent" with
+// no name). Claude Code renders one bottom line: "◯ <name>  <description>… NN/MM agents done ·
+// …". We pull the real workflow name + agent count from it. Scan only the last lines (live
+// status area). Pure — tested in core.test.ts.
+export function parseWorkflow(text: string): { name: string; done: number; total: number } | undefined {
+  const lines = text.split('\n').map(l => l.trimEnd()).filter(l => l !== '').slice(-8)
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = lines[i].match(/^\s*\S\s+(\S+).*?(\d+)\/(\d+)\s+agents done\b/)
+    if (m) {
+      return { name: m[1], done: Number(m[2]), total: Number(m[3]) }
+    }
+  }
+  return undefined
+}
+
 export function shellQuote(args: string[]): string {
   return args
     .map(a => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`))

@@ -14,6 +14,7 @@ import {
   parseCompaction,
   parseContextPct,
   parseError,
+  parseWorkflow,
 } from '../src/tmux-ops'
 import { isClaudeArgv, claudePidsInDir, cmdlineOf, findClaudeAncestor } from '../src/proc'
 import {
@@ -201,6 +202,12 @@ describe('tmux-ops', () => {
     expect(parseError('  Credit balance is too low')).toBe('Credit balance is too low')
     expect(parseError('⏺ your /login session looks fine, no Please run /login needed')).toBeUndefined() // prose, not line-start
     expect(parseError('❯ just working, no errors here')).toBeUndefined()
+  })
+  test('parseWorkflow: name + agent count from pane status line', () => {
+    expect(parseWorkflow('  ◯ deep-research  Deep research harness — fan-out web… 91/94 agents done · 32m 20s · ↓ 3.7m tokens · ⚠ Large workflow · /workflows to stop'))
+      .toEqual({ name: 'deep-research', done: 91, total: 94 })
+    expect(parseWorkflow('❯ \n  ● 93%  ░░░░ 2%  ⏱ 4h24m')).toBeUndefined()
+    expect(parseWorkflow('just some prose about 5/10 agents done in a sentence')).toBeUndefined() // no leading glyph+name shape
   })
   test('shellQuote: quotes only where needed', () => {
     expect(shellQuote(["it's"])).toBe(`'it'\\''s'`)

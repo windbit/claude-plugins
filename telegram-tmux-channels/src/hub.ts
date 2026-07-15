@@ -21,7 +21,7 @@ import { Router } from './router'
 import { chunk, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES, PHOTO_EXTS } from './chunk'
 import { mdToHtml } from './md-html'
 import {
-  parseOpsCommand, parseCompaction, parseContextPct, parseError, sendKeys, typeLine, selectOption, restartSession, stopSession, alive,
+  parseOpsCommand, parseCompaction, parseContextPct, parseError, parseWorkflow, sendKeys, typeLine, selectOption, restartSession, stopSession, alive,
   hasTmuxSession, ensureTmuxSession, killTmuxSession, buildLaunch, shellQuote, ackStartupPrompts,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
@@ -733,6 +733,12 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
     }
     return
   }
+  // workflow agents carry no name in the hook (only "workflow-subagent") — their status comes
+  // from the pane-scraped workflow line (handleWorkflow) with the real name, so skip them here
+  // to avoid a duplicate generic "🤖 Агенты" message.
+  if (msg.action === 'start' && msg.agentType === 'workflow-subagent') {
+    return
+  }
   for (const key of msg.bindingKeys) {
     let agents = activeSubagents.get(key)
     if (msg.action === 'start') {
@@ -851,6 +857,63 @@ async function handleCompaction(pane: string, session: SessionInfo, text: string
     compactMessages.delete(pane)
     await bot.api
       .editMessageText(existing.chatId, existing.msgId, '✅ <b>Компакция готова.</b>', { parse_mode: 'HTML' })
+      .catch(() => {})
+  }
+}
+
+// Running-workflow status, scraped from the pane — hooks expose only "workflow-subagent" with
+// no name, but Claude Code renders the real name + agent count on one bottom line. Same
+// self-editing + 2-miss anti-flicker as compaction; the workflow-subagent hook status is
+// suppressed (handleSubagentEvent) so this doesn't double up.
+type WorkflowState = { chatId: string; threadId?: number; msgId: number; last: string; name: string; total: number; misses: number }
+const workflowMessages = new Map<string, WorkflowState>() // key = pane
+
+function renderWorkflow(name: string, done: number, total: number): string {
+  return `${done >= total ? '✅' : '🤖'} <b>Воркфлоу</b> <code>${escHtml(name)}</code> — ${done}/${total} агентов`
+}
+
+async function handleWorkflow(pane: string, session: SessionInfo, text: string): Promise<void> {
+  const wf = parseWorkflow(text)
+  const existing = workflowMessages.get(pane)
+  if (wf) {
+    const key = `${wf.name} ${wf.done}/${wf.total}`
+    if (!existing) {
+      const target = pickerChatFor(session)
+      if (!target) {
+        return
+      }
+      const base = { chatId: target.chatId, ...(target.threadId != null ? { threadId: target.threadId } : {}) }
+      workflowMessages.set(pane, { ...base, msgId: -1, last: key, name: wf.name, total: wf.total, misses: 0 }) // reserve
+      const sent = await bot.api
+        .sendMessage(target.chatId, renderWorkflow(wf.name, wf.done, wf.total), {
+          ...(target.threadId != null ? { message_thread_id: target.threadId } : {}),
+          parse_mode: 'HTML',
+        })
+        .catch(() => undefined)
+      if (sent) {
+        workflowMessages.set(pane, { ...base, msgId: sent.message_id, last: key, name: wf.name, total: wf.total, misses: 0 })
+      } else if (workflowMessages.get(pane)?.msgId === -1) {
+        workflowMessages.delete(pane)
+      }
+      return
+    }
+    existing.misses = 0
+    existing.name = wf.name
+    existing.total = wf.total
+    if (existing.msgId === -1 || existing.last === key) {
+      return // still sending, or count unchanged — skip the edit
+    }
+    existing.last = key
+    await bot.api
+      .editMessageText(existing.chatId, existing.msgId, renderWorkflow(wf.name, wf.done, wf.total), { parse_mode: 'HTML' })
+      .catch(() => {})
+  } else if (existing && existing.msgId !== -1) {
+    if (++existing.misses < 2) {
+      return // tolerate a flicker frame before declaring it done
+    }
+    workflowMessages.delete(pane)
+    await bot.api
+      .editMessageText(existing.chatId, existing.msgId, `✅ <b>Воркфлоу</b> <code>${escHtml(existing.name)}</code> готов (${existing.total} агентов)`, { parse_mode: 'HTML' })
       .catch(() => {})
   }
 }
@@ -1014,6 +1077,7 @@ async function pollScreensOnce(): Promise<void> {
     const text = await capturePane(s.pane).catch(() => '')
     await detectPicker(s.pane, s, text)
     await handleCompaction(s.pane, s, text)
+    await handleWorkflow(s.pane, s, text)
     await handleErrors(s.pane, s, text)
     const prev = lastPaneText.get(s.pane)
     // subagents running = definitely busy, even on ticks where the visible screen
@@ -1045,6 +1109,11 @@ async function pollScreensOnce(): Promise<void> {
   for (const pane of [...lastError.keys()]) {
     if (!seen.has(pane)) {
       lastError.delete(pane)
+    }
+  }
+  for (const pane of [...workflowMessages.keys()]) {
+    if (!seen.has(pane)) {
+      workflowMessages.delete(pane)
     }
   }
 }
