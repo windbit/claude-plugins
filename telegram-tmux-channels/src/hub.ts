@@ -770,16 +770,30 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
     const tracked = subagentMessages.get(key)
     if (!tracked) {
       const target = keyToTarget(key)
+      // reserve the slot SYNCHRONOUSLY before the await — a workflow fans out N agents at once,
+      // so N start events race here; without the reservation each sees "no message" and sends
+      // its own, spamming N separate bubbles instead of one self-editing message.
+      subagentMessages.set(key, { chatId: target.chat_id, ...(target.thread_id != null ? { threadId: target.thread_id } : {}), msgId: -1 })
       const sent = await bot.api
         .sendMessage(target.chat_id, text, {
           ...(target.thread_id != null ? { message_thread_id: target.thread_id } : {}),
           parse_mode: 'HTML',
         })
         .catch(() => undefined)
-      if (sent) {
-        subagentMessages.set(key, { chatId: target.chat_id, ...(target.thread_id != null ? { threadId: target.thread_id } : {}), msgId: sent.message_id })
+      if (!sent) {
+        subagentMessages.delete(key) // send failed — release the reservation
+        continue
+      }
+      subagentMessages.set(key, { chatId: target.chat_id, ...(target.thread_id != null ? { threadId: target.thread_id } : {}), msgId: sent.message_id })
+      // events that raced in while we were sending skipped their edit (msgId was -1) — re-render now
+      const latest = renderSubagentText([...agents.values()])
+      if (latest !== text) {
+        await bot.api.editMessageText(target.chat_id, sent.message_id, latest, { parse_mode: 'HTML' }).catch(() => {})
       }
       continue
+    }
+    if (tracked.msgId === -1) {
+      continue // first send still in flight — the post-send re-render above will pick up this state
     }
     await bot.api.editMessageText(tracked.chatId, tracked.msgId, text, { parse_mode: 'HTML' }).catch(() => {})
   }
