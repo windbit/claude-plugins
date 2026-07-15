@@ -701,7 +701,21 @@ const turnEnded = new Map<string, boolean>() // has Stop fired since the batch's
 const pendingDescriptions = new Map<string, string>()
 
 function renderSubagentText(items: SubagentStatus[]): string {
-  const lines = items.map(i => `${i.done ? '✅' : '🟡'} ${escHtml(i.name)}`)
+  // Схлопываем одинаковые имена в одну строку со счётчиком — воркфлоу спавнит десятки
+  // одноимённых сабагентов (напр. "workflow-subagent"), иначе статус превращается в стену.
+  const groups = new Map<string, { done: number; total: number }>()
+  for (const i of items) {
+    const g = groups.get(i.name) ?? { done: 0, total: 0 }
+    g.total++
+    if (i.done) g.done++
+    groups.set(i.name, g)
+  }
+  const all = [...groups].map(([name, g]) => {
+    const glyph = g.done === g.total ? '✅' : '🟡'
+    const suffix = g.total === 1 ? '' : g.done === g.total ? ` ×${g.total}` : ` ${g.done}/${g.total}`
+    return `${glyph} ${escHtml(name)}${suffix}`
+  })
+  const lines = all.length > 25 ? [...all.slice(0, 25), `… +${all.length - 25}`] : all
   return ['🤖 <b>Агенты</b>', '', ...lines].join('\n')
 }
 
