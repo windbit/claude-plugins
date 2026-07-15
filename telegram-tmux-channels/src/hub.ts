@@ -12,15 +12,16 @@ import { homedir } from 'os'
 import type { Socket } from 'bun'
 
 import { STATE_DIR, ENV_FILE, INBOX_DIR, PID_FILE, SOCK_PATH } from './paths'
-import { messageKey, keyToTarget, targetFor } from './bindings'
+import { messageKey, keyToTarget, targetFor, type Target } from './bindings'
 import {
   loadBindings, saveBindings, keysForDir, resolveProjectDir, type BindingEntry,
 } from './registry'
 import { encode, makeLineDecoder, type StubToHub, type HubToStub, type SessionInfo } from './protocol'
 import { Router } from './router'
 import { chunk, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES, PHOTO_EXTS } from './chunk'
+import { mdToHtml } from './md-html'
 import {
-  parseOpsCommand, parseCompaction, sendKeys, typeLine, selectOption, restartSession, stopSession, alive,
+  parseOpsCommand, parseCompaction, parseContextPct, parseError, sendKeys, typeLine, selectOption, restartSession, stopSession, alive,
   hasTmuxSession, ensureTmuxSession, killTmuxSession, buildLaunch, shellQuote, ackStartupPrompts,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
@@ -34,7 +35,7 @@ import {
   loadTrustedGroups, isExcludedTopic, slugFromTopicName, MODE_LABEL,
   type TrustedGroupConfig, type TrustedGroupMode,
 } from './trusted-groups'
-import { resolveModeDir, gitBranch, runHookDelete } from './dir-resolve'
+import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree } from './dir-resolve'
 import { jsonlMtimes, captureNewSessionId, recentSessions } from './session-id'
 import { recordChat, chatLabel } from './known-chats'
 
@@ -56,10 +57,28 @@ function codePath(p: string): string {
 }
 
 // "typing…" hint — shown whenever the agent is handed input to work on.
+// Telegram's typing action already lives ~5s, so refreshing faster is pure waste —
+// and with several topics of one supergroup all nudging every poll tick it burst-hit
+// the per-CHAT sendChatAction limit (429 retry-after), dropping the indicator at random.
+// ponytail: per-(chat,thread) 4s throttle — under 5s so the indicator never lapses.
+const lastTyping = new Map<string, number>()
 function typing(chatId: string, threadId?: number): void {
+  const k = `${chatId}:${threadId ?? ''}`
+  const now = Date.now()
+  if (now - (lastTyping.get(k) ?? 0) < 4000) {
+    return
+  }
+  lastTyping.set(k, now)
   void bot.api
     .sendChatAction(chatId, 'typing', threadId != null ? { message_thread_id: threadId } : {})
-    .catch(err => log(`typing failed: chat=${chatId} ${err}`))
+    .catch(err => {
+      // frequent send → a good place to notice the topic was deleted out from under us
+      if (threadId != null && isThreadGoneError(err)) {
+        void onTopicGone(`${chatId}/${threadId}`)
+      } else {
+        log(`typing failed: chat=${chatId} ${err}`)
+      }
+    })
 }
 
 // token and admins from state .env; the real env wins
@@ -101,6 +120,17 @@ const TTS_BASE_URL = process.env.TTS_OPENAI_BASE_URL || 'https://api.openai.com/
 
 // base for /bind <name>; absolute paths and ~/… still work
 const PROJECTS_DIR = process.env.TELEGRAM_PROJECTS_DIR || join(homedir(), 'projects')
+
+// Prepend a "⚠️ Контекст NN%" line to agent replies once context usage reaches this %.
+// 0 (or invalid) disables it. Configurable via TELEGRAM_CONTEXT_WARN_PCT (default 80).
+const CONTEXT_WARN_PCT = (() => {
+  const n = Number(process.env.TELEGRAM_CONTEXT_WARN_PCT ?? '80')
+  return Number.isFinite(n) ? n : 80
+})()
+
+// Debug log (screenlog.jsonl) writes ALL Telegram traffic to disk — a dev aid, off by default
+// so the public plugin doesn't log everyone's messages. Enable with TELEGRAM_DEBUG_LOG=1.
+const DEBUG_LOG = /^(1|true|yes|on)$/i.test(process.env.TELEGRAM_DEBUG_LOG ?? '')
 
 // kill a zombie poller (incl. the old plugin) — one getUpdates per token
 mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
@@ -219,14 +249,32 @@ function assertBoundChat(conn: Socket<undefined>, chat_id: string): void {
   }
 }
 
+// reply targets a specific topic — a session may only send into its OWN (chat,thread),
+// not just any topic of a chat it happens to be bound to somewhere else. targetFor
+// returns an explicit thread_id verbatim, so without this a session bound to -100/10
+// could pass thread_id:20 and post into a sibling topic.
+// ponytail: react/edit still assert only the chat — bounding an arbitrary message_id to
+// the session's own topic needs a per-binding sent/received msg-id registry; deferred,
+// the actor there is an already-shell-compromised session (weaker boundary).
+function assertBoundTarget(conn: Socket<undefined>, target: Target): void {
+  const ok = ownKeys(conn).some(k => {
+    const t = keyToTarget(k)
+    return t.chat_id === target.chat_id && t.thread_id === target.thread_id
+  })
+  if (!ok) {
+    const where = target.thread_id != null ? `${target.chat_id}/${target.thread_id}` : target.chat_id
+    throw new Error(`${where} is not bound to this session's project`)
+  }
+}
+
 async function doReply(conn: Socket<undefined>, params: Record<string, unknown>): Promise<string> {
   const target = targetFor(
     ownKeys(conn),
     params.chat_id as string | undefined,
     params.thread_id as string | undefined,
   )
-  assertBoundChat(conn, target.chat_id)
-  const text = params.text as string
+  assertBoundTarget(conn, target)
+  let text = params.text as string
   const reply_to = params.reply_to != null ? Number(params.reply_to) : undefined
   const files = (params.files as string[] | undefined) ?? []
   const parseMode = params.format === 'markdownv2' ? ('MarkdownV2' as const) : undefined
@@ -239,21 +287,45 @@ async function doReply(conn: Socket<undefined>, params: Record<string, unknown>)
     }
   }
 
+  // Context-usage warning on real agent replies (this path only — hub control/status
+  // messages don't go through doReply). % is scraped from the session's pane status line
+  // (cached by pollScreens). Only when at/above the configured threshold.
+  if (CONTEXT_WARN_PCT > 0) {
+    const pane = router.get(conn)?.pane
+    const pct = pane ? parseContextPct(await capturePane(pane).catch(() => '')) : undefined
+    if (pct != null && pct >= CONTEXT_WARN_PCT) {
+      text = `⚠️ Контекст: ${pct}%\n\n${text}`
+    }
+  }
+
   const chunks = chunk(text, MAX_CHUNK_LIMIT, 'length')
   // thread on EVERY send — otherwise chunks/files without reply_to land in General
   const threadOpt = target.thread_id != null ? { message_thread_id: target.thread_id } : {}
   const sentIds: number[] = []
   try {
     for (let i = 0; i < chunks.length; i++) {
-      const sent = await bot.api.sendMessage(target.chat_id, chunks[i], {
+      const base = {
         ...threadOpt,
         ...(reply_to != null && i === 0 ? { reply_parameters: { message_id: reply_to } } : {}),
-        ...(parseMode ? { parse_mode: parseMode } : {}),
-      })
+      }
+      let sent
+      if (parseMode) {
+        // explicit format=markdownv2 — caller escaped it themselves, send raw
+        sent = await bot.api.sendMessage(target.chat_id, chunks[i], { ...base, parse_mode: parseMode })
+      } else {
+        // default: agents write plain markdown → render it as Telegram HTML. Fall back to plain
+        // text if the converted HTML is somehow rejected, so a message is never lost.
+        sent = await bot.api
+          .sendMessage(target.chat_id, mdToHtml(chunks[i]), { ...base, parse_mode: 'HTML' })
+          .catch(() => bot.api.sendMessage(target.chat_id, chunks[i], base))
+      }
       sentIds.push(sent.message_id)
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
+    if (target.thread_id != null && isThreadGoneError(err)) {
+      void onTopicGone(`${target.chat_id}/${target.thread_id}`) // topic deleted mid-session
+    }
     throw new Error(`reply failed after ${sentIds.length} of ${chunks.length} chunk(s) sent: ${msg}`)
   }
   for (const f of files) {
@@ -498,6 +570,12 @@ function bindingAllows(chatId: string, senderId: string): boolean {
     }
   }
   return false
+}
+
+// allow-check scoped to ONE binding (not chat-wide) — for answering a specific topic's
+// picker, where "allowed somewhere in this chat" would let a topic-A user answer topic-B.
+function bindingAllowsKey(key: string, senderId: string): boolean {
+  return loadBindings()[key]?.allow?.includes(senderId) ?? false
 }
 
 function pickerChatFor(session: SessionInfo): { chatId: string; threadId?: number } | undefined {
@@ -749,6 +827,36 @@ async function handleCompaction(pane: string, session: SessionInfo, text: string
   }
 }
 
+// Push error/auth banners (API Error, expired login, …) into the bound topic — no hook
+// fires for them, so without this the user only sees them if watching tmux. Edge-triggered
+// and deduped: the pane is scraped every 1.5s and a banner lingers for many ticks, so we
+// notify once per NEW banner and re-arm after it scrolls off (parseError → undefined).
+// ponytail: immediate re-arm can double-notify if a banner flickers in/out of the scanned
+// window; errors are rare and missing one is worse than a rare dup — add a miss-counter if it nags.
+const lastError = new Map<string, string>() // key = pane → last-notified banner
+
+async function handleErrors(pane: string, session: SessionInfo, text: string): Promise<void> {
+  const err = parseError(text)
+  if (!err) {
+    lastError.delete(pane)
+    return
+  }
+  if (lastError.get(pane) === err) {
+    return
+  }
+  lastError.set(pane, err)
+  const target = pickerChatFor(session)
+  if (!target) {
+    return
+  }
+  await bot.api
+    .sendMessage(target.chatId, `⛔️ <b>Ошибка в сессии</b>\n\n<code>${escHtml(err)}</code>`, {
+      ...(target.threadId != null ? { message_thread_id: target.threadId } : {}),
+      parse_mode: 'HTML',
+    })
+    .catch(e => log(`error-notify failed: pane=${pane} ${e}`))
+}
+
 // Task-list tracking, fed by TaskCreate/TaskUpdate hooks — same self-editing-message and
 // same turn-boundary idea as subagents above (reuses turnEnded), but no promptId dance:
 // id/subject/status come straight off one PostToolUse event each.
@@ -878,6 +986,7 @@ async function pollScreensOnce(): Promise<void> {
     const text = await capturePane(s.pane).catch(() => '')
     await detectPicker(s.pane, s, text)
     await handleCompaction(s.pane, s, text)
+    await handleErrors(s.pane, s, text)
     const prev = lastPaneText.get(s.pane)
     // subagents running = definitely busy, even on ticks where the visible screen
     // (e.g. just an elapsed-time counter) happens to render identically to the last poll
@@ -903,6 +1012,11 @@ async function pollScreensOnce(): Promise<void> {
   for (const pane of [...compactMessages.keys()]) {
     if (!seen.has(pane)) {
       compactMessages.delete(pane) // session gone — drop the in-flight progress message
+    }
+  }
+  for (const pane of [...lastError.keys()]) {
+    if (!seen.has(pane)) {
+      lastError.delete(pane)
     }
   }
 }
@@ -975,11 +1089,34 @@ async function handlePickCallback(
   }
 }
 
+// The socket is 0600, but every Claude session runs shell as the hub user, so a
+// prompt-injected session could connect and claim ANOTHER binding's keys to hijack its
+// traffic. A claimed key is only honoured if it exists AND its dir is the session's real
+// cwd (sessions launch via `tmux -c <binding.dir>`, so this holds for legit ones).
+// ponytail: dir-match can't separate two bindings that share a folder (mode: folder) —
+// a random per-session capability token would; add if same-dir hijack matters.
+function verifyClaimedKeys(session: SessionInfo): SessionInfo {
+  if (!session.bindingKeys?.length) {
+    return session
+  }
+  const reg = loadBindings()
+  const canon = (p: string) => { try { return realpathSync(p) } catch { return p } }
+  const cwd = session.cwd
+  const sameDir = (a: string, b: string) => a === b || canon(a) === canon(b)
+  const valid = session.bindingKeys.filter(k => cwd != null && reg[k] != null && sameDir(reg[k].dir, cwd))
+  if (valid.length !== session.bindingKeys.length) {
+    const dropped = session.bindingKeys.filter(k => !valid.includes(k))
+    log(`subscribe: dropped unverified keys [${dropped}] for cwd=${cwd ?? '-'}`)
+  }
+  return { ...session, bindingKeys: valid.length ? valid : undefined }
+}
+
 async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promise<void> {
   if (msg.op === 'subscribe') {
-    router.subscribe(sock, msg.session)
-    learnCmdline(msg.session)
-    log(`subscribe: cwd=${msg.session.cwd ?? '-'} pane=${msg.session.pane ?? '-'}`)
+    const session = verifyClaimedKeys(msg.session)
+    router.subscribe(sock, session)
+    learnCmdline(session)
+    log(`subscribe: cwd=${session.cwd ?? '-'} pane=${session.pane ?? '-'}`)
     return
   }
   if (msg.op === 'rpc') {
@@ -1154,26 +1291,142 @@ async function spawnSession(
   }
 }
 
-// new forum topic in a trusted group → auto-bind + auto-start, no /bind needed
-type PendingTopic =
-  | { stage: 'need-dir'; cfg: TrustedGroupConfig; mode: TrustedGroupMode; topicName: string; say: (html: string) => void }
-  | {
-      stage: 'branch-grace'
-      cfg: TrustedGroupConfig
-      dir: string
-      mode: TrustedGroupMode
-      topicName: string
-      say: (html: string) => void
-      timer: ReturnType<typeof setTimeout>
+// On hub start, bring back sessions whose tmux is gone (host reboot: the whole tmux server
+// died with it). A plain hub restart leaves tmux alive — hasTmuxSession skips those, their
+// stubs reconnect on their own. Staggered so a reboot doesn't launch every Claude at once.
+let revivedOnce = false
+async function reviveBoundSessions(): Promise<void> {
+  if (revivedOnce) {
+    return // onStart also fires on polling reconnects — revive is a boot-only pass
+  }
+  revivedOnce = true
+  for (const [key, binding] of Object.entries(loadBindings())) {
+    if (await hasTmuxSession(sessionName(key, binding.dir))) {
+      continue
     }
-const pendingTopics = new Map<string, PendingTopic>()
-// mode picker sent, waiting for a button tap — before dir/branch resolution starts
+    log(`boot-revive: ${key} → ${binding.dir}`)
+    const t = keyToTarget(key)
+    const say = (html: string) =>
+      void bot.api
+        .sendMessage(t.chat_id, html, { ...(t.thread_id != null ? { message_thread_id: t.thread_id } : {}), parse_mode: 'HTML' })
+        .catch(() => {})
+    await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', say)
+    await new Promise(r => setTimeout(r, 3000))
+  }
+}
+
+// Tear down a binding fully: remove it, kill its tmux, clean its worktree (hook if this
+// binding was hook-created, else a plain `git worktree remove` when the dir is a linked
+// worktree). Shared by /unbind and topic-deletion cleanup. Returns an HTML summary.
+async function teardownBinding(key: string, binding: BindingEntry): Promise<string> {
+  const reg = loadBindings()
+  delete reg[key]
+  saveBindings(reg)
+  let note = `🔓 <b>Отвязано</b> <i>(было ${codePath(binding.dir)})</i>`
+  // The hub created this tmux session (spawnSession) — it owns tearing it down, any mode.
+  const name = sessionName(key, binding.dir)
+  if (await hasTmuxSession(name)) {
+    await killTmuxSession(name)
+    note += `\n🪟 tmux <code>${escHtml(name)}</code> закрыт.`
+  }
+  const groupCfg = loadTrustedGroups()[keyToTarget(key).chat_id]
+  if (binding.hookBranch && groupCfg?.hook?.delete && groupCfg.dir) {
+    try {
+      await runHookDelete(groupCfg.hook, binding.hookBranch, groupCfg.dir)
+      note += `\n🗑 Хук очистки (<code>${escHtml(binding.hookBranch)}</code>) выполнен.`
+    } catch (e) {
+      note += `\n⚠️ Хук очистки не удался: ${escHtml(String(e))}`
+    }
+  } else {
+    try {
+      if (await removePlainWorktree(binding.dir)) {
+        note += `\n🗑 Worktree удалён (<code>git worktree remove</code>).`
+      }
+    } catch (e) {
+      note += `\n⚠️ Удаление worktree не удалось: ${escHtml(String(e))}`
+    }
+  }
+  return note
+}
+
+// Telegram has NO "forum topic deleted" update (unlike created/closed/reopened) — bots
+// aren't told. So a deleted topic is detected reactively: the next send to it fails with
+// "message thread not found". That error triggers this teardown; notifications go to
+// General (no thread_id), since the topic itself is gone.
+function isThreadGoneError(err: unknown): boolean {
+  const d = err instanceof GrammyError ? err.description : String((err as { message?: string })?.message ?? err)
+  return /message thread not found|thread not found|TOPIC_DELETED/i.test(d)
+}
+const tearingDown = new Set<string>()
+async function onTopicGone(key: string): Promise<void> {
+  if (tearingDown.has(key) || !loadBindings()[key]) {
+    return
+  }
+  tearingDown.add(key)
+  try {
+    const binding = loadBindings()[key]
+    if (!binding) {
+      return
+    }
+    log(`topic gone: ${key} — auto-unbind + cleanup`)
+    const note = await teardownBinding(key, binding)
+    void bot.api
+      .sendMessage(keyToTarget(key).chat_id, `🗑 <b>Топик удалён</b> — прибрал за ним.\n\n${note}`, { parse_mode: 'HTML' })
+      .catch(() => {})
+  } finally {
+    tearingDown.delete(key)
+  }
+}
+
+// new forum topic in a trusted group → auto-bind + auto-start, no /bind needed
+type PendingTopic = { cfg: TrustedGroupConfig; mode: TrustedGroupMode; topicName: string; say: (html: string) => void }
+const pendingTopics = new Map<string, PendingTopic>() // waiting for a "which folder?" answer
+// mode picker sent, waiting for a button tap — before dir resolution starts
 type PendingModeChoice = { cfg: TrustedGroupConfig; topicName: string; say: (html: string) => void }
 const pendingModeChoice = new Map<string, PendingModeChoice>()
-const TOPIC_GRACE_MS = 4000
 
-// mode is known — still need dir (ask, like /bind) and/or branch (grace window) before starting
-function beginDirOrBranch(
+// Messages typed while a topic is still being set up (mode not yet picked, session not yet
+// up). Held here and delivered by flushQueued once the session connects, so the first task
+// isn't lost. Keyed by binding key.
+const queuedMessages = new Map<string, Inbound[]>()
+function enqueueForTopic(key: string, inbound: Inbound): void {
+  const q = queuedMessages.get(key) ?? []
+  q.push(inbound)
+  queuedMessages.set(key, q)
+  const msgId = inbound.ctx.message?.message_id
+  if (msgId != null) {
+    // 👌 = "held, will deliver once the session is up" (⏳ isn't in Telegram's reaction set)
+    void bot.api.setMessageReaction(String(inbound.ctx.chat!.id), msgId, [{ type: 'emoji', emoji: '👌' }]).catch(() => {})
+  }
+}
+async function flushQueued(key: string): Promise<void> {
+  const q = queuedMessages.get(key)
+  queuedMessages.delete(key)
+  if (!q?.length) {
+    return
+  }
+  const conns = await waitForBinding(key, 30_000)
+  if (!conns.length) {
+    const c = q[0]?.ctx
+    if (c?.chat) {
+      const tid = c.message?.message_thread_id
+      void bot.api
+        .sendMessage(String(c.chat.id), '⚠️ Сессия не поднялась вовремя — отложенные сообщения не доставлены, повтори.', {
+          ...(tid != null ? { message_thread_id: tid } : {}),
+          parse_mode: 'HTML',
+        })
+        .catch(() => {})
+    }
+    return
+  }
+  for (const inb of q) {
+    await handleInbound(inb) // binding now exists → normal delivery path
+  }
+}
+
+// mode is known — start the session. Branch/slug is always the topic name (no "type a
+// branch" window: it only ate the user's first message). Dir from group config, or ask.
+function beginTopicSession(
   key: string,
   cfg: TrustedGroupConfig,
   mode: TrustedGroupMode,
@@ -1182,15 +1435,10 @@ function beginDirOrBranch(
 ): void {
   if (!cfg.dir) {
     say('📁 Пришли папку для этого топика — как в <code>/bind</code>: имя в ~/projects или абсолютный путь.')
-    pendingTopics.set(key, { stage: 'need-dir', cfg, mode, topicName, say })
+    pendingTopics.set(key, { cfg, mode, topicName, say })
     return
   }
-  const dir = cfg.dir
-  const timer = setTimeout(() => {
-    pendingTopics.delete(key)
-    void runAutoTopic(key, cfg, dir, mode, slugFromTopicName(topicName), say)
-  }, TOPIC_GRACE_MS)
-  pendingTopics.set(key, { stage: 'branch-grace', cfg, dir, mode, topicName, say, timer })
+  void runAutoTopic(key, cfg, cfg.dir, mode, slugFromTopicName(topicName), say)
 }
 
 async function runAutoTopic(
@@ -1215,6 +1463,9 @@ async function runAutoTopic(
     await spawnSession(key, reg[key], 'new', say)
   } catch (e) {
     say(`⚠️ <b>Не удалось поднять сессию</b>: ${escHtml(String(e))}`)
+  } finally {
+    // always drain the hold queue — deliver on success, or tell the user + clear it on failure
+    await flushQueued(key)
   }
 }
 
@@ -1243,19 +1494,20 @@ function modePromptText(cfg: TrustedGroupConfig, intro: string): string {
   return [intro, '', base, '', ...modeLines, `${OWN_DIR_LABEL} — указать путь для этого топика вручную.`].join('\n')
 }
 
-// forum_topic_created can be missed (hub down, race) — a message in an unbound
-// topic of a trusted group is treated the same way, using the message itself
-// as the branch/slug source (the topic's real title isn't available here).
+// forum_topic_created can be missed (hub down, race) — a message in an unbound topic of a
+// trusted group sets the topic up the same way. The real title isn't in a message update,
+// so callers pass a generic slug (topic-<id>) as topicName; the triggering message is
+// queued by the caller and delivered once the session is up.
 async function handleLateTopic(
   key: string,
   chatId: string,
   threadId: number,
   cfg: TrustedGroupConfig,
-  firstText: string,
+  topicName: string,
   say: (html: string) => void,
 ): Promise<void> {
   if (cfg.modes.length > 1) {
-    pendingModeChoice.set(key, { cfg, topicName: firstText, say })
+    pendingModeChoice.set(key, { cfg, topicName, say })
     void bot.api
       .sendMessage(chatId, modePromptText(cfg, 'Похоже, это новый топик — как поднять сессию?'), {
         message_thread_id: threadId,
@@ -1265,7 +1517,7 @@ async function handleLateTopic(
       .catch(() => {})
     return
   }
-  beginDirOrBranch(key, cfg, cfg.modes[0], firstText, say)
+  beginTopicSession(key, cfg, cfg.modes[0], topicName, say)
 }
 
 type Inbound = {
@@ -1275,7 +1527,8 @@ type Inbound = {
   attachment?: AttachmentMeta
 }
 
-async function handleInbound({ ctx, text, downloadImage, attachment }: Inbound): Promise<void> {
+async function handleInbound(inbound: Inbound): Promise<void> {
+  const { ctx, text, downloadImage, attachment } = inbound
   const from = ctx.from
   const chat = ctx.chat
   if (!from || !chat) {
@@ -1301,37 +1554,40 @@ async function handleInbound({ ctx, text, downloadImage, attachment }: Inbound):
     return
   }
 
-  // a message beat the auto-topic grace timer, or answered the "which folder" prompt
+  // this topic asked "which folder?" and is waiting for the answer. The dir picks the
+  // session cwd (→ Claude runs there with bypassPermissions), so only an admin may supply
+  // it — a non-admin group member must not be able to point a session at an arbitrary dir.
   const pendingTopic = pendingTopics.get(key)
   if (pendingTopic) {
-    if (pendingTopic.stage === 'need-dir') {
-      let dir: string
-      try {
-        dir = resolveProjectDir(text.trim(), PROJECTS_DIR)
-      } catch (e) {
-        pendingTopic.say(`⚠️ <b>Не похоже на папку</b>: ${escHtml(e instanceof Error ? e.message : String(e))}\n\nПришли ещё раз.`)
-        return
-      }
-      pendingTopics.delete(key)
-      await runAutoTopic(key, pendingTopic.cfg, dir, pendingTopic.mode, slugFromTopicName(pendingTopic.topicName), pendingTopic.say)
+    if (!isAdmin(senderId)) {
+      log(`drop (not admin) pending-topic answer: key=${key} from=${senderId}`)
       return
     }
-    clearTimeout(pendingTopic.timer)
+    let dir: string
+    try {
+      dir = resolveProjectDir(text.trim(), PROJECTS_DIR)
+    } catch (e) {
+      pendingTopic.say(`⚠️ <b>Не похоже на папку</b>: ${escHtml(e instanceof Error ? e.message : String(e))}\n\nПришли ещё раз.`)
+      return
+    }
     pendingTopics.delete(key)
-    await runAutoTopic(key, pendingTopic.cfg, pendingTopic.dir, pendingTopic.mode, text.trim(), pendingTopic.say)
+    await runAutoTopic(key, pendingTopic.cfg, dir, pendingTopic.mode, slugFromTopicName(pendingTopic.topicName), pendingTopic.say)
     return
   }
 
-  // custom-answer text for a picker: a pane in this chat is waiting for free text
+  // custom-answer text for a picker: THIS topic's pane is waiting for free text. Match
+  // the exact (chat,thread) and check allow for this specific binding — otherwise a user
+  // allowed in topic A could answer topic B's AskUserQuestion (and with several pickers
+  // pending, the first in Map order would be picked).
   for (const [pane, aw] of awaitingCustom) {
-    if (aw.chatId !== chat_id) {
+    if (aw.chatId !== chat_id || aw.threadId !== threadId) {
       continue
     }
     if (Date.now() - aw.at > CUSTOM_TIMEOUT_MS) {
       awaitingCustom.delete(pane)
       continue
     }
-    if (isAdmin(senderId) || bindingAllows(chat_id, senderId)) {
+    if (isAdmin(senderId) || bindingAllowsKey(key, senderId)) {
       await typeLine(pane, text)
       typing(chat_id, threadId) // agent now processes the custom answer
       const ap = activePickers.get(pane)
@@ -1360,18 +1616,24 @@ async function handleInbound({ ctx, text, downloadImage, attachment }: Inbound):
     return
   }
 
-  // mode picker already sent for this topic — wait for the button, don't also treat text as anything else
+  // mode picker sent, waiting for a button tap — hold this message and deliver it once the
+  // session is up (flushQueued), so the first task typed before tapping isn't lost.
   if (pendingModeChoice.has(key)) {
+    enqueueForTopic(key, inbound)
     return
   }
 
   const binding = loadBindings()[key]
   if (!binding) {
-    if (threadId != null) {
+    if (threadId != null && isAdmin(senderId)) {
       const trustedCfg = loadTrustedGroups()[chat_id]
       if (trustedCfg && !trustedCfg.exclude?.topicIds?.includes(threadId)) {
+        // forum_topic_created was missed (hub was down / raced) — set the topic up now,
+        // triggered by this message. Queue the message so it reaches the session once it's
+        // up instead of being consumed. Topic name is unknown here → generic slug.
         log(`late-binding: forum_topic_created missed for key=${key}, using message as trigger`)
-        await handleLateTopic(key, chat_id, threadId, trustedCfg, text, say)
+        enqueueForTopic(key, inbound)
+        await handleLateTopic(key, chat_id, threadId, trustedCfg, `topic-${threadId}`, say)
         return
       }
     }
@@ -1437,6 +1699,9 @@ const SCREENLOG = join(STATE_DIR, 'screenlog.jsonl')
 const SCREENLOG_MAX = 1000
 
 function logDebugEvent(e: Record<string, unknown>): void {
+  if (!DEBUG_LOG) {
+    return // opt-in via TELEGRAM_DEBUG_LOG=1; off by default for the public plugin
+  }
   let entry: string
   try {
     entry = JSON.stringify({ ts: new Date().toISOString(), ...e })
@@ -1490,8 +1755,27 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
   const reg = loadBindings()
   const binding: BindingEntry | undefined = reg[key]
 
-  if (cmd === 'bind' || cmd === 'unbind' || cmd === 'allow') {
+  if (cmd === 'bind' || cmd === 'unbind' || cmd === 'allow' || cmd === 'delete') {
     if (!isAdmin(senderId)) {
+      return
+    }
+    // /delete = teardown (unbind + tmux + worktree) AND remove the topic itself, in one go.
+    // Telegram gives no topic-deleted event, so this is the clean way to delete + clean up
+    // together. Reports to General, since the topic is gone by then.
+    if (cmd === 'delete') {
+      if (threadId == null) {
+        void say('❌ <code>/delete</code> — только в топике форума (General/обычную группу так не удалить).')
+        return
+      }
+      const note = binding ? await teardownBinding(key, binding) : '🔓 <i>Бинда тут не было.</i>'
+      let delNote: string
+      try {
+        await bot.api.deleteForumTopic(chat_id, threadId)
+        delNote = '🗑 Топик удалён.'
+      } catch (e) {
+        delNote = `⚠️ Топик не удалён (у бота есть право can_delete_messages?): ${escHtml(e instanceof Error ? e.message : String(e))}`
+      }
+      void bot.api.sendMessage(chat_id, `${note}\n${delNote}`, { parse_mode: 'HTML' }).catch(() => {})
       return
     }
     if (cmd === 'bind') {
@@ -1520,28 +1804,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
         void say('Здесь ничего не привязано.')
         return
       }
-      delete reg[key]
-      saveBindings(reg)
-      const unboundNote = `🔓 <b>Отвязано</b> <i>(было ${codePath(binding.dir)})</i>`
-      // The hub is what created this tmux session (ensureTmuxSession, in spawnSession) —
-      // it owns tearing it down too, symmetrically, regardless of mode.
-      const name = sessionName(key, binding.dir)
-      const hadSession = await hasTmuxSession(name)
-      if (hadSession) {
-        await killTmuxSession(name)
-      }
-      const tmuxNote = hadSession ? `\n🪟 tmux <code>${escHtml(name)}</code> закрыт.` : ''
-      const groupCfg = binding.hookBranch ? loadTrustedGroups()[keyToTarget(key).chat_id] : undefined
-      if (binding.hookBranch && groupCfg?.hook?.delete && groupCfg.dir) {
-        try {
-          await runHookDelete(groupCfg.hook, binding.hookBranch, groupCfg.dir)
-          void say(`${unboundNote}${tmuxNote}\n🗑 Хук очистки (<code>${escHtml(binding.hookBranch)}</code>) выполнен.`)
-        } catch (e) {
-          void say(`${unboundNote}${tmuxNote}\n⚠️ Хук очистки не удался: ${escHtml(String(e))}`)
-        }
-        return
-      }
-      void say(`${unboundNote}${tmuxNote}`)
+      void say(await teardownBinding(key, binding))
       return
     }
     // allow
@@ -1849,7 +2112,7 @@ bot.on('message:forum_topic_created', ctx => {
     return
   }
 
-  beginDirOrBranch(key, cfg, cfg.modes[0], topicName, say)
+  beginTopicSession(key, cfg, cfg.modes[0], topicName, say)
 })
 
 bot.on('message:text', async ctx => handleInbound({ ctx, text: ctx.message.text }))
@@ -1956,7 +2219,7 @@ bot.on('callback_query:data', async ctx => {
     pendingModeChoice.delete(key)
     await ctx.answerCallbackQuery({ text: MODE_LABEL[mode] }).catch(() => {})
     await ctx.editMessageText(`${MODE_LABEL[mode]} — выбрано.`).catch(() => {})
-    beginDirOrBranch(key, pending.cfg, mode, pending.topicName, pending.say)
+    beginTopicSession(key, pending.cfg, mode, pending.topicName, pending.say)
     return
   }
   const td = /^topicdir:(.+)$/.exec(ctx.callbackQuery.data)
@@ -1975,7 +2238,7 @@ bot.on('callback_query:data', async ctx => {
     await ctx.answerCallbackQuery({ text: OWN_DIR_LABEL }).catch(() => {})
     await ctx.editMessageText(`${OWN_DIR_LABEL} — выбрано.`).catch(() => {})
     pending.say('📁 Пришли папку — как в <code>/bind</code>: имя в ~/projects или абсолютный путь.')
-    pendingTopics.set(key, { stage: 'need-dir', cfg: pending.cfg, mode: 'folder', topicName: pending.topicName, say: pending.say })
+    pendingTopics.set(key, { cfg: pending.cfg, mode: 'folder', topicName: pending.topicName, say: pending.say })
     return
   }
   // nr:<key>:<idx|esc>:<title-hash> = drive the CLI's own /resume list by arrows
@@ -2161,6 +2424,7 @@ void (async () => {
           botUsername = info.username
           rmQuiet(SPAWN_LOCK)
           log(`polling as @${info.username}`)
+          void reviveBoundSessions() // host reboot: tmux died with it — bring sessions back
           // scoped-списки (например, от старого бота) перекрывают default в DM/группах — чистим
           void bot.api.deleteMyCommands({ scope: { type: 'all_private_chats' } }).catch(e => log(`deleteMyCommands: ${e}`))
           void bot.api.deleteMyCommands({ scope: { type: 'all_group_chats' } }).catch(e => log(`deleteMyCommands: ${e}`))
@@ -2178,6 +2442,7 @@ void (async () => {
             { command: 'restart', description: 'Аккуратный перезапуск сессии' },
             { command: 'bind', description: 'Привязать этот чат/топик к папке проекта (админ)' },
             { command: 'unbind', description: 'Снять привязку (админ)' },
+            { command: 'delete', description: 'Снять привязку + удалить топик (админ)' },
             { command: 'allow', description: 'Дать доступ пользователю к этому биндингу (админ)' },
           ]).catch(e => log(`setMyCommands: ${e}`))
         },

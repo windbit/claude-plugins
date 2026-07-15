@@ -33,6 +33,12 @@ A fork of the official `telegram@claude-plugins-official`.
   than disappearing — the message is the turn's history, not just a live snapshot.
 - State lives in `~/.claude/channels/telegram/`: `.env` (token + `TELEGRAM_ADMINS`, not in git),
   `bindings.json` (hub-managed, hot-reloaded).
+- **Debug log** — dev opt-in, **off by default** (enable with `TELEGRAM_DEBUG_LOG=1`; the public
+  plugin doesn't log anyone's traffic). When on, `~/.claude/channels/telegram/screenlog.jsonl` is
+  one correlated timeline of everything through the hub: entry types `screen` (pane snapshots),
+  `tg_in`, `tg_out` (the latter holds the **final** payload actually sent, incl. hub-injected bits
+  like the context badge). Ring buffer, last 1000 entries. Ground truth for "what really went
+  in/out" — read it instead of guessing (a `reply` call only returns `sent, id`).
 
 ## Requirements
 
@@ -80,7 +86,7 @@ a platform limitation, not a plugin one.) The hub autospawns on the first stub c
 - `/resume` — bring a session up (`--continue`); `/new` — a fresh one; the hub creates the
   tmux session (named after the folder) and clicks through the startup prompts (folder trust,
   dev warning).
-- `/compact`, `/clear`, `/esc`, `/restart`, `/stop` (graceful, no relaunch) — for a live session.
+- `/compact`, `/clear`, `/esc`, `/enter` (submit whatever's in the input line, e.g. a `/compact` that got typed but not sent), `/restart`, `/stop` (graceful, no relaunch) — for a live session.
 - `/model` — opens the CLI's model picker as Telegram buttons (via the picker bridge).
 - `/screen` — PNG snapshot of the live pane (headless-chrome render of the ANSI capture) —
   escape hatch for any TUI state the picker bridge doesn't recognize.
@@ -98,6 +104,8 @@ a platform limitation, not a plugin one.) The hub autospawns on the first stub c
 | `TELEGRAM_PROJECTS_DIR` | `$HOME/projects` | base for `/bind <name>` |
 | `TELEGRAM_LAUNCH_CMD` | `claude --permission-mode bypassPermissions` | base launch for `/new`,`/resume` (channel flags appended automatically) |
 | `TELEGRAM_HUB_AUTOSPAWN` | `1` | `0` disables autospawn (for a service-only install) |
+| `TELEGRAM_CONTEXT_WARN_PCT` | `80` | prepend `⚠️ Контекст NN%` to an agent's text reply once its context-window usage reaches this %; `0` disables |
+| `TELEGRAM_DEBUG_LOG` | `0` | `1` enables the debug log (`screenlog.jsonl`, all hub traffic); off by default |
 | `OPENAI_API_KEY` | — | enables voice (STT + TTS); unset = voice silently disabled |
 | `STT_OPENAI_MODEL` | `gpt-4o-transcribe` | transcription model for incoming voice notes |
 | `STT_OPENAI_BASE_URL` | `https://api.openai.com/v1` | override for an OpenAI-compatible endpoint |

@@ -69,6 +69,24 @@ export async function runHookDelete(hook: HookConfig, branch: string, groupDir: 
   }
 }
 
+// Remove a plain `git worktree add` worktree (the no-hook case). Only acts if `dir` really
+// is a linked worktree (its git-dir lives under <main>/.git/worktrees/…) — never the main
+// checkout or a plain folder binding. Runs from the main repo so git won't refuse "current
+// worktree". --force drops uncommitted changes (the topic/worktree is being deleted anyway).
+export async function removePlainWorktree(dir: string): Promise<boolean> {
+  const gd = await run(['git', '-C', dir, 'rev-parse', '--path-format=absolute', '--git-dir'])
+  if (!gd.ok || !gd.out.includes('/worktrees/')) {
+    return false // not a linked worktree — nothing to remove
+  }
+  const common = await run(['git', '-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'])
+  const mainRepo = common.ok ? dirname(common.out.trim()) : dir
+  const res = await run(['git', '-C', mainRepo, 'worktree', 'remove', '--force', dir])
+  if (!res.ok) {
+    throw new Error(`git worktree remove failed: ${(res.err || res.out).trim()}`)
+  }
+  return true
+}
+
 export async function resolveModeDir(
   mode: TrustedGroupMode,
   baseDir: string,

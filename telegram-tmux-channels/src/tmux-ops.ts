@@ -3,12 +3,12 @@
 
 export type OpsCommand =
   | 'compact' | 'clear' | 'esc' | 'enter' | 'restart' | 'resume' | 'new' | 'status'
-  | 'bind' | 'unbind' | 'allow' | 'model' | 'stop' | 'screen'
+  | 'bind' | 'unbind' | 'allow' | 'model' | 'stop' | 'screen' | 'delete'
 
 export function parseOpsCommand(
   text: string,
 ): { cmd: OpsCommand; bot?: string; arg?: string } | undefined {
-  const m = /^\/(compact|clear|esc|enter|restart|resume|new|status|bind|unbind|allow|model|stop|screen)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
+  const m = /^\/(compact|clear|esc|enter|restart|resume|new|status|bind|unbind|allow|model|stop|screen|delete)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
     text.trim(),
   )
   if (!m) {
@@ -39,6 +39,45 @@ export function parseCompaction(text: string): { pct: number; elapsed?: string }
   const pct = Number(barLine.match(/[▰▱]{5,}\s*(\d+)%/)![1])
   const el = lines[i].match(/\(([^)]+)\)/)
   return { pct, ...(el ? { elapsed: el[1] } : {}) }
+}
+
+// Context-window usage % from the pane status line: "<pie> NN%  <bar> MM%  ⏱ …". The first
+// percentage (right after the pie glyph ○◔◑◕●) is context occupancy. Scan only the last lines
+// (live status area). Pure — tested in core.test.ts.
+export function parseContextPct(text: string): number | undefined {
+  const lines = text.split('\n').filter(l => l.trim() !== '').slice(-6)
+  for (const l of lines) {
+    const m = l.match(/[○◔◑◕●]\s*(\d+)\s*%/)
+    if (m) {
+      return Number(m[1])
+    }
+  }
+  return undefined
+}
+
+// Error/auth banners Claude Code prints into the pane that no hook exposes, but the user
+// must see (transient API failures, expired login, billing). Anchored at the line start
+// after stripping the ⏺/● TUI bullet, on the last visible lines only — so the words don't
+// false-trigger as scrollback prose (e.g. a session discussing an API error). Extend the
+// list as new banners turn up ("наверно что-то ещё" — Roma). Pure — tested in core.test.ts.
+const ERROR_SIGNATURES = [
+  /^API Error\b/i, // "API Error: Connection closed…", "(Request timed out)", 5xx/429/529 overloaded
+  /^Invalid API key/i, // covers "Invalid API key · Please run /login"
+  /^OAuth (token|authentication)\b.*(expired|error|invalid)/i,
+  /^Please run \/login/i, // logged out / auth expired (anchored — else it matches prose mentioning /login)
+  /^Credit balance is too low/i, // billing
+  /^(authentication_error|permission_error|overloaded_error|rate_limit_error)\b/i,
+]
+
+export function parseError(text: string): string | undefined {
+  const lines = text.split('\n').map(l => l.trimEnd()).filter(l => l !== '').slice(-12)
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const bare = lines[i].replace(/^[⏺●•*+>│└─⎿╰\s]+/, '')
+    if (ERROR_SIGNATURES.some(re => re.test(bare))) {
+      return bare.slice(0, 300)
+    }
+  }
+  return undefined
 }
 
 export function shellQuote(args: string[]): string {

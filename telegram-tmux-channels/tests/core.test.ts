@@ -11,6 +11,9 @@ import { fmtUntil, formatLimits } from '../src/limits'
 import {
   parseOpsCommand, shellQuote, relaunchCommand,
   stripResumeFlags, buildLaunch, DEFAULT_CLAUDE_ARGV,
+  parseCompaction,
+  parseContextPct,
+  parseError,
 } from '../src/tmux-ops'
 import { isClaudeArgv, claudePidsInDir, cmdlineOf, findClaudeAncestor } from '../src/proc'
 import {
@@ -18,6 +21,7 @@ import {
   type TrustedGroupConfig, type TrustedGroupMode,
 } from '../src/trusted-groups'
 import { claudeProjectDir } from '../src/session-id'
+import { mdToHtml } from '../src/md-html'
 
 describe('bindings', () => {
   test('messageKey: dm / topic / group', () => {
@@ -157,6 +161,7 @@ describe('tmux-ops', () => {
     expect(parseOpsCommand('/compact')).toEqual({ cmd: 'compact' })
     expect(parseOpsCommand('/clear')).toEqual({ cmd: 'clear' })
     expect(parseOpsCommand('/esc@some_bot ')).toEqual({ cmd: 'esc', bot: 'some_bot' })
+    expect(parseOpsCommand('/enter')).toEqual({ cmd: 'enter' })
     expect(parseOpsCommand('/bind myapp')).toEqual({ cmd: 'bind', arg: 'myapp' })
     expect(parseOpsCommand('/bind@bot ~/projects/myapp')).toEqual({
       cmd: 'bind', bot: 'bot', arg: '~/projects/myapp',
@@ -167,6 +172,35 @@ describe('tmux-ops', () => {
     expect(parseOpsCommand('/stop')).toEqual({ cmd: 'stop' })
     expect(parseOpsCommand('compact')).toBeUndefined()
     expect(parseOpsCommand('/unknown x')).toBeUndefined()
+  })
+
+  test('parseCompaction: pane snapshots (real formats)', () => {
+    // mid-compaction, with elapsed
+    expect(parseCompaction('✻ Compacting conversation… (1m 24s)\n  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 61%'))
+      .toEqual({ pct: 61, elapsed: '1m 24s' })
+    // early frame, spinner is a dot, no elapsed yet
+    expect(parseCompaction('· Compacting conversation…\n  ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 0%'))
+      .toEqual({ pct: 0 })
+    // idle pane → nothing
+    expect(parseCompaction('❯ да, сделай webhook\n  ◑ 39%  █░░░░░░░░░ 12%  ⏱ 1h50m')).toBeUndefined()
+    // the words as scrollback CONTENT, bar not adjacent → must NOT match (the self-scrape bug)
+    expect(parseCompaction('discussing Compacting conversation… (elapsed)\nsome other line\nmore text\n  ▰▰▰▰▰▰ 61% example')).toBeUndefined()
+  })
+
+  test('parseContextPct: pane status line', () => {
+    expect(parseContextPct('❯ \n  ◑ 39%  █░░░░░░░░░ 12%  ⏱ 1h50m')).toBe(39)
+    expect(parseContextPct('  ● 93%  ░░░░ 2%  ⏱ 4h24m')).toBe(93)
+    expect(parseContextPct('  ○ 0%  ░░░░░░░░░░ 3%')).toBe(0)
+    expect(parseContextPct('❯ just some text, no status line')).toBeUndefined()
+  })
+  test('parseError: banners vs prose', () => {
+    // real banner, with the ⏺ bullet, near the bottom
+    expect(parseError('⏺ Done — reporting.\n⏺ API Error: Connection closed mid-response. The response above may be incomplete.\n✻ Cogitated'))
+      .toBe('API Error: Connection closed mid-response. The response above may be incomplete.')
+    expect(parseError('● Invalid API key · Please run /login')).toContain('Invalid API key')
+    expect(parseError('  Credit balance is too low')).toBe('Credit balance is too low')
+    expect(parseError('⏺ your /login session looks fine, no Please run /login needed')).toBeUndefined() // prose, not line-start
+    expect(parseError('❯ just working, no errors here')).toBeUndefined()
   })
   test('shellQuote: quotes only where needed', () => {
     expect(shellQuote(["it's"])).toBe(`'it'\\''s'`)
@@ -283,5 +317,24 @@ describe('session-id', () => {
     expect(claudeProjectDir('/home/user/projects/agentek-console')).toBe(
       join(homedir(), '.claude', 'projects', '-home-user-projects-agentek-console'),
     )
+  })
+})
+
+describe('md-html', () => {
+  test('mdToHtml: markdown → Telegram HTML', () => {
+    expect(mdToHtml('**bold** and *italic*')).toBe('<b>bold</b> and <i>italic</i>')
+    expect(mdToHtml('__b__ ~~s~~ `c`')).toBe('<b>b</b> <s>s</s> <code>c</code>')
+    expect(mdToHtml('# Heading')).toBe('<b>Heading</b>')
+    expect(mdToHtml('- one\n- two')).toBe('• one\n• two')
+    expect(mdToHtml('[gh](https://x.com/a?b=1&c=2)')).toBe('<a href="https://x.com/a?b=1&amp;c=2">gh</a>')
+  })
+  test('mdToHtml: escapes html; code is literal (no md, escaped)', () => {
+    expect(mdToHtml('a < b & c > d')).toBe('a &lt; b &amp; c &gt; d')
+    expect(mdToHtml('`<env>-key & **x**`')).toBe('<code>&lt;env&gt;-key &amp; **x**</code>')
+    expect(mdToHtml('```\nif (a<b && c) {}\n```')).toBe('<pre>if (a&lt;b &amp;&amp; c) {}</pre>')
+  })
+  test('mdToHtml: bold inside link, bullet star not italic', () => {
+    expect(mdToHtml('[**t**](u)')).toBe('<a href="u"><b>t</b></a>')
+    expect(mdToHtml('* item')).toBe('• item')
   })
 })
