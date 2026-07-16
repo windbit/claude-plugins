@@ -72,6 +72,22 @@ export function recentSessions(dir: string, limit = 5): RecentSession[] {
 // unless the newest session was written this turn (mtime and the message's own timestamp
 // both ≥ sinceMs), so a turn that produced only tool calls never re-forwards a stale
 // answer from an earlier turn.
+// Byte size of the most-recently-written session file in `dir`. The reply fallback polls
+// this until it stops growing — a filesystem-agnostic "the turn finished flushing" signal
+// (size is exact even where mtime resolution is coarse), so it reads the turn's real final
+// text instead of an intermediate preamble that happens to be on disk mid-flush.
+export function newestJsonlSize(dir: string): number {
+  const newest = [...jsonlMtimes(dir).entries()].sort((a, b) => b[1] - a[1])[0]
+  if (!newest) {
+    return 0
+  }
+  try {
+    return statSync(join(claudeProjectDir(dir), `${newest[0]}.jsonl`)).size
+  } catch {
+    return 0
+  }
+}
+
 export function lastAssistantText(dir: string, sinceMs: number): string {
   const newest = [...jsonlMtimes(dir).entries()].sort((a, b) => b[1] - a[1])[0]
   // mtime is only a cheap "was this file touched around the turn" pre-filter — filesystems

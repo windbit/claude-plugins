@@ -38,7 +38,7 @@ import {
   type TrustedGroupConfig, type TrustedGroupMode,
 } from './trusted-groups'
 import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree } from './dir-resolve'
-import { jsonlMtimes, captureNewSessionId, recentSessions, lastAssistantText } from './session-id'
+import { jsonlMtimes, captureNewSessionId, recentSessions, lastAssistantText, newestJsonlSize } from './session-id'
 import { recordChat, chatLabel } from './known-chats'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
@@ -749,18 +749,26 @@ async function forwardFallbackReply(key: string): Promise<void> {
     return
   }
   pendingAnswer.delete(key) // one shot per inbound, whatever the transcript holds
-  // The Stop hook that triggers turnend beats the transcript flush by a few hundred ms
-  // (measured: text stamped .484s, hook fired same second) — poll briefly for the turn's
-  // final text before giving up. A genuinely tool-only turn just polls out to '' and stays
-  // silent; the happy path (agent DID reply) never reaches here — egress cleared pending.
-  let text = ''
-  for (let i = 0; i < 8; i++) {
-    text = lastAssistantText(pending.dir, pending.at)
-    if (text) {
-      break
+  // Wait for the turn's transcript writes to FINISH before reading — not just for some text
+  // to appear. The Stop hook that triggers turnend fires mid-flush: when only an intermediate
+  // preamble is on disk while the real final answer is still being written (seen live —
+  // forwarded "…let me verify…" while the actual answer landed ~200ms later). Poll the file
+  // size until it goes quiet (filesystem-agnostic "flush done"), THEN read the final text.
+  let lastSize = -1
+  let stable = 0
+  for (let i = 0; i < 30; i++) {
+    const sz = newestJsonlSize(pending.dir)
+    if (sz === lastSize) {
+      if (++stable >= 3) {
+        break // size unchanged for ~600ms — the turn has fully flushed
+      }
+    } else {
+      lastSize = sz
+      stable = 0
     }
-    await new Promise(r => setTimeout(r, 400)) // up to ~3.2s for the flush to land
+    await new Promise(r => setTimeout(r, 200)) // ~6s hard cap
   }
+  const text = lastAssistantText(pending.dir, pending.at)
   if (!text || lastFallback.get(key) === text) {
     return // no fresh textual answer this turn, or already forwarded
   }
