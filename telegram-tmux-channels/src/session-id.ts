@@ -67,6 +67,62 @@ export function recentSessions(dir: string, limit = 5): RecentSession[] {
     .map(([id, mtime]) => ({ id, mtime, snippet: firstUserText(dir, id) }))
 }
 
+// Final assistant text of the most-recently-written session in `dir`, for the reply
+// fallback (hub.ts). Reads only the file tail — transcripts run to many MB. Returns ''
+// unless the newest session was written this turn (mtime and the message's own timestamp
+// both ≥ sinceMs), so a turn that produced only tool calls never re-forwards a stale
+// answer from an earlier turn.
+export function lastAssistantText(dir: string, sinceMs: number): string {
+  const newest = [...jsonlMtimes(dir).entries()].sort((a, b) => b[1] - a[1])[0]
+  if (!newest || newest[1] < sinceMs) {
+    return ''
+  }
+  let buf: string
+  try {
+    const p = join(claudeProjectDir(dir), `${newest[0]}.jsonl`)
+    const size = statSync(p).size
+    const start = Math.max(0, size - 262144) // last 256KB holds the turn's final message
+    const fd = openSync(p, 'r')
+    const b = Buffer.alloc(size - start)
+    readSync(fd, b, 0, b.length, start)
+    closeSync(fd)
+    buf = b.toString('utf8')
+  } catch {
+    return ''
+  }
+  const lines = buf.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim()
+    if (!line) {
+      continue
+    }
+    let j: {
+      type?: string
+      timestamp?: string
+      message?: { content?: Array<{ type?: string; text?: string }> }
+    }
+    try {
+      j = JSON.parse(line)
+    } catch {
+      continue // a head line sliced mid-JSON by the tail read — skip it
+    }
+    if (j.type !== 'assistant' || !Array.isArray(j.message?.content)) {
+      continue
+    }
+    const text = j.message.content
+      .filter(p => p.type === 'text' && p.text?.trim())
+      .map(p => p.text)
+      .join('\n\n')
+      .trim()
+    if (!text) {
+      continue // tool-only assistant turn — keep scanning back for the last text block
+    }
+    // first (=latest) assistant text found; if it predates this turn there was no fresh answer
+    return j.timestamp && Date.parse(j.timestamp) < sinceMs ? '' : text
+  }
+  return ''
+}
+
 export async function captureNewSessionId(
   dir: string,
   before: Map<string, number>,

@@ -38,7 +38,7 @@ import {
   type TrustedGroupConfig, type TrustedGroupMode,
 } from './trusted-groups'
 import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree } from './dir-resolve'
-import { jsonlMtimes, captureNewSessionId, recentSessions } from './session-id'
+import { jsonlMtimes, captureNewSessionId, recentSessions, lastAssistantText } from './session-id'
 import { recordChat, chatLabel } from './known-chats'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
@@ -243,12 +243,21 @@ async function handleRpc(
   params: Record<string, unknown>,
 ): Promise<string> {
   switch (method) {
-    case 'reply':
-      return doReply(conn, params)
-    case 'react':
-      return doReact(conn, params)
-    case 'edit_message':
-      return doEdit(conn, params)
+    case 'reply': {
+      const r = await doReply(conn, params)
+      clearPendingAnswer(conn) // agent answered — turnend won't auto-forward
+      return r
+    }
+    case 'react': {
+      const r = await doReact(conn, params)
+      clearPendingAnswer(conn)
+      return r
+    }
+    case 'edit_message': {
+      const r = await doEdit(conn, params)
+      clearPendingAnswer(conn)
+      return r
+    }
     case 'download_attachment':
       return doDownload(params)
     case 'permission_request':
@@ -715,6 +724,46 @@ const turnEnded = new Map<string, boolean>() // has Stop fired since the batch's
 // SubagentStart itself only has agent_id/agent_type — correlate the two via promptId.
 const pendingDescriptions = new Map<string, string>()
 
+// ── reply-fallback safety net ───────────────────────────────────────────────
+// A Telegram-triggered turn that ends without the agent calling ANY egress tool
+// (reply/react/edit — voice rides inside reply) means the agent wrote its answer
+// into the transcript but forgot to send it (~1-in-5 substantive turns, measured on
+// habebe-trader). On turnend we read the turn's final assistant text from the .jsonl
+// and forward it ourselves. Files/voice/reactions still only travel the normal reply
+// path — this only fires on a genuine miss, so no spam and no lost answers.
+const pendingAnswer = new Map<string, { dir: string; at: number }>() // key -> inbound awaiting a reply
+const lastFallback = new Map<string, string>() // key -> last auto-forwarded text (turnend can fire twice)
+const FALLBACK_MAX_CHARS = 3500 // cap the safety-net forward; a huge answer gets truncated, not spammed
+
+// Any agent-initiated egress for this session counts as "answered" — drop the pending marker
+// so turnend won't also forward. Called only after the egress send actually succeeded.
+function clearPendingAnswer(conn: Socket<undefined>): void {
+  for (const k of ownKeys(conn)) {
+    pendingAnswer.delete(k)
+  }
+}
+
+async function forwardFallbackReply(key: string): Promise<void> {
+  const pending = pendingAnswer.get(key)
+  if (!pending) {
+    return
+  }
+  pendingAnswer.delete(key) // one shot per inbound, whatever the transcript holds
+  const text = lastAssistantText(pending.dir, pending.at)
+  if (!text || lastFallback.get(key) === text) {
+    return // no fresh textual answer this turn, or already forwarded
+  }
+  lastFallback.set(key, text)
+  const target = keyToTarget(key)
+  const threadOpt = target.thread_id != null ? { message_thread_id: target.thread_id } : {}
+  const body = text.length > FALLBACK_MAX_CHARS ? `${text.slice(0, FALLBACK_MAX_CHARS)}\n\n…(ответ обрезан)` : text
+  await bot.api
+    .sendMessage(target.chat_id, mdToHtml(body), { ...threadOpt, parse_mode: 'HTML' })
+    .catch(() => bot.api.sendMessage(target.chat_id, body, threadOpt))
+    .catch(e => log(`reply-fallback send failed key=${key}: ${e}`))
+  log(`reply-fallback: forwarded ${text.length} chars for key=${key} (agent never called reply)`)
+}
+
 function renderSubagentText(items: SubagentStatus[]): string {
   // Схлопываем одинаковые имена в одну строку со счётчиком — воркфлоу спавнит десятки
   // одноимённых сабагентов (напр. "workflow-subagent"), иначе статус превращается в стену.
@@ -745,6 +794,7 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
     log(`subagent: turnend keys=${msg.bindingKeys.join(',')}`)
     for (const key of msg.bindingKeys) {
       turnEnded.set(key, true)
+      await forwardFallbackReply(key) // agent didn't reply → forward its final text ourselves
     }
     return
   }
@@ -1922,6 +1972,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
       : {}),
   }
   snapshotScreens(key, text, conns)
+  pendingAnswer.set(key, { dir: binding.dir, at: Date.now() }) // armed until the agent replies or turnend forwards
   for (const conn of conns) {
     send(conn, { op: 'event', kind: 'message', content: text, meta })
   }

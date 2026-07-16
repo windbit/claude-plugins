@@ -21,7 +21,8 @@ import {
   isExcludedTopic, slugFromTopicName, mergeGroupConfig,
   type TrustedGroupConfig, type TrustedGroupMode,
 } from '../src/trusted-groups'
-import { claudeProjectDir } from '../src/session-id'
+import { claudeProjectDir, lastAssistantText } from '../src/session-id'
+import { writeFileSync } from 'fs'
 import { mdToHtml } from '../src/md-html'
 
 describe('bindings', () => {
@@ -324,6 +325,38 @@ describe('session-id', () => {
     expect(claudeProjectDir('/home/user/projects/agentek-console')).toBe(
       join(homedir(), '.claude', 'projects', '-home-user-projects-agentek-console'),
     )
+  })
+
+  test('lastAssistantText: final text of the turn, skipping tool-only entries', () => {
+    const proj = join('/tmp', `cm-fb-a-${Date.now()}`)
+    mkdirSync(claudeProjectDir(proj), { recursive: true })
+    const now = Date.now()
+    const iso = (ms: number) => new Date(ms).toISOString()
+    writeFileSync(
+      join(claudeProjectDir(proj), 's.jsonl'),
+      [
+        JSON.stringify({ type: 'assistant', timestamp: iso(now - 9e4), message: { content: [{ type: 'text', text: 'прошлый ход' }] } }),
+        JSON.stringify({ type: 'user', timestamp: iso(now), message: { content: 'hi' } }),
+        JSON.stringify({ type: 'assistant', timestamp: iso(now + 1e3), message: { content: [{ type: 'text', text: 'Готово' }] } }),
+        JSON.stringify({ type: 'assistant', timestamp: iso(now + 2e3), message: { content: [{ type: 'tool_use', name: 'Bash' }] } }),
+      ].join('\n') + '\n',
+    )
+    expect(lastAssistantText(proj, now)).toBe('Готово')
+  })
+
+  test('lastAssistantText: "" when the turn produced only tool calls (stale text guard)', () => {
+    const proj = join('/tmp', `cm-fb-b-${Date.now()}`)
+    mkdirSync(claudeProjectDir(proj), { recursive: true })
+    const now = Date.now()
+    const iso = (ms: number) => new Date(ms).toISOString()
+    writeFileSync(
+      join(claudeProjectDir(proj), 's.jsonl'),
+      [
+        JSON.stringify({ type: 'assistant', timestamp: iso(now - 9e4), message: { content: [{ type: 'text', text: 'ответ прошлого хода' }] } }),
+        JSON.stringify({ type: 'assistant', timestamp: iso(now + 1e3), message: { content: [{ type: 'tool_use', name: 'Bash' }] } }),
+      ].join('\n') + '\n',
+    )
+    expect(lastAssistantText(proj, now)).toBe('')
   })
 })
 
