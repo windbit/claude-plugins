@@ -3,6 +3,8 @@
 // → live sessions with that cwd. Bindings are created by /bind,/unbind,/allow from
 // Telegram (admins from TELEGRAM_ADMINS).
 import { Bot, GrammyError, InlineKeyboard, InputFile, type Context } from 'grammy'
+import { autoRetry } from '@grammyjs/auto-retry'
+import { apiThrottler } from '@grammyjs/transformer-throttler'
 import type { ReactionTypeEmoji } from 'grammy/types'
 import {
   readFileSync, writeFileSync, mkdirSync, rmSync, statSync, realpathSync, chmodSync,
@@ -165,6 +167,15 @@ bot.api.config.use((prev, method, payload, signal) => {
   }
   return prev(method, payload, signal)
 })
+// Resilience: retry on 429 honouring retry_after (never silently drop a message), and throttle
+// outbound to stay under Telegram's limits (~30/s global, ~20/min per group). sendChatAction
+// (the "печатает" nudge) bypasses the throttler — it's ephemeral, must fire promptly, and a
+// rare 429 on it is caught by auto-retry anyway; queueing it would let the indicator lapse.
+bot.api.config.use(autoRetry({ maxRetryAttempts: 3, maxDelaySeconds: 20 }))
+const throttler = apiThrottler()
+bot.api.config.use((prev, method, payload, signal) =>
+  method === 'sendChatAction' ? prev(method, payload, signal) : throttler(prev, method, payload, signal),
+)
 bot.use(async (ctx, next) => {
   logDebugEvent({ type: 'tg_in', update: ctx.update })
   await next()
@@ -1093,69 +1104,57 @@ async function handleSkillEvent(msg: Extract<StubToHub, { op: 'skill' }>): Promi
 // agent (or something) is actively doing something, worth a "typing…" nudge
 const lastPaneText = new Map<string, string>()
 
-let pollingScreens = false
-async function pollScreens(): Promise<void> {
-  if (pollingScreens) {
-    return // previous tick still running (many bound sessions can outrun SCREEN_POLL_MS) — skip, don't overlap
-  }
-  pollingScreens = true
-  try {
-    await pollScreensOnce()
-  } finally {
-    pollingScreens = false
-  }
-}
+const captureTimeout = (pane: string): Promise<string> =>
+  Promise.race([capturePane(pane).catch(() => ''), new Promise<string>(r => setTimeout(() => r(''), 2000))])
 
-async function pollScreensOnce(): Promise<void> {
+// Two-pass poll. PASS 1 (capture panes in parallel + fire "печатает") runs EVERY tick and is
+// never blocked by Telegram sends, so the typing indicator can't starve while a heavy workflow
+// spams status edits. PASS 2 (the detectors, which DO send) runs across panes in parallel
+// (per-pane state → safe) and is skipped if a previous pass is still in flight, with a hard cap
+// so a hung send can't wedge it forever.
+let detectorsRunning = false
+async function pollScreens(): Promise<void> {
+  const sessions = router.all().map(c => router.get(c)).filter((s): s is SessionInfo & { pane: string } => !!s?.pane && !!s.cwd)
   const seen = new Set<string>()
-  for (const conn of router.all()) {
-    const s = router.get(conn)
-    if (!s?.pane || !s.cwd) {
-      continue
-    }
-    seen.add(s.pane)
-    const text = await capturePane(s.pane).catch(() => '')
-    await detectPicker(s.pane, s, text)
-    await handleCompaction(s.pane, s, text)
-    await handleWorkflow(s.pane, s, text)
-    await handleErrors(s.pane, s, text)
-    const prev = lastPaneText.get(s.pane)
-    // subagents running = definitely busy, even on ticks where the visible screen
-    // (e.g. just an elapsed-time counter) happens to render identically to the last poll
-    const busy = s.bindingKeys?.some(k => [...(activeSubagents.get(k)?.values() ?? [])].some(a => !a.done)) ?? false
-    if (busy || (prev !== undefined && prev !== text)) {
-      const target = pickerChatFor(s)
-      if (target) {
-        typing(target.chatId, target.threadId)
+  // PASS 1 — parallel capture + typing keep-alive (cheap, fire-and-forget)
+  const captured = await Promise.all(
+    sessions.map(async s => {
+      const text = await captureTimeout(s.pane)
+      seen.add(s.pane)
+      const busy = s.bindingKeys?.some(k => [...(activeSubagents.get(k)?.values() ?? [])].some(a => !a.done)) ?? false
+      const prev = lastPaneText.get(s.pane)
+      if (busy || (prev !== undefined && prev !== text)) {
+        const target = pickerChatFor(s)
+        if (target) {
+          typing(target.chatId, target.threadId)
+        }
       }
-    }
-    lastPaneText.set(s.pane, text)
+      lastPaneText.set(s.pane, text)
+      return { s, text }
+    }),
+  )
+  for (const pane of [...activePickers.keys()]) if (!seen.has(pane)) activePickers.delete(pane)
+  for (const pane of [...lastPaneText.keys()]) if (!seen.has(pane)) lastPaneText.delete(pane)
+  for (const pane of [...compactMessages.keys()]) if (!seen.has(pane)) compactMessages.delete(pane)
+  for (const pane of [...lastError.keys()]) if (!seen.has(pane)) lastError.delete(pane)
+  for (const pane of [...workflowMessages.keys()]) if (!seen.has(pane)) workflowMessages.delete(pane)
+
+  // PASS 2 — detectors, parallel across panes; skip if a prior pass is still running
+  if (detectorsRunning) {
+    return
   }
-  for (const pane of [...activePickers.keys()]) {
-    if (!seen.has(pane)) {
-      activePickers.delete(pane)
-    }
-  }
-  for (const pane of [...lastPaneText.keys()]) {
-    if (!seen.has(pane)) {
-      lastPaneText.delete(pane)
-    }
-  }
-  for (const pane of [...compactMessages.keys()]) {
-    if (!seen.has(pane)) {
-      compactMessages.delete(pane) // session gone — drop the in-flight progress message
-    }
-  }
-  for (const pane of [...lastError.keys()]) {
-    if (!seen.has(pane)) {
-      lastError.delete(pane)
-    }
-  }
-  for (const pane of [...workflowMessages.keys()]) {
-    if (!seen.has(pane)) {
-      workflowMessages.delete(pane)
-    }
-  }
+  detectorsRunning = true
+  const done = Promise.all(
+    captured.map(async ({ s, text }) => {
+      await detectPicker(s.pane, s, text)
+      await handleCompaction(s.pane, s, text)
+      await handleWorkflow(s.pane, s, text)
+      await handleErrors(s.pane, s, text)
+    }),
+  )
+  // don't let a hung send wedge detectorsRunning forever — release after a hard cap regardless
+  await Promise.race([done.catch(() => {}), new Promise<void>(r => setTimeout(r, 25_000))])
+  detectorsRunning = false
 }
 setInterval(() => void pollScreens(), SCREEN_POLL_MS)
 
