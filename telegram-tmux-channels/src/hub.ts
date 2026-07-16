@@ -1017,7 +1017,7 @@ const todoMessages = new Map<string, { chatId: string; threadId?: number; msgId:
 function renderTodoText(todos: Todo[]): string {
   const glyph = (s: string) => (s === 'completed' ? '✅' : s === 'in_progress' ? '🟡' : '⏳')
   const lines = todos.map(t => `${glyph(t.status)} ${escHtml(t.content)}`)
-  return ['📝 <b>Тудушки</b>', '', ...lines].join('\n')
+  return ['📝 <b>To Do</b>', '', ...lines].join('\n')
 }
 
 async function handleTodoEvent(msg: Extract<StubToHub, { op: 'todo' }>): Promise<void> {
