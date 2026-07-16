@@ -768,9 +768,11 @@ async function forwardFallbackReply(key: string): Promise<void> {
   const target = keyToTarget(key)
   const threadOpt = target.thread_id != null ? { message_thread_id: target.thread_id } : {}
   const body = text.length > FALLBACK_MAX_CHARS ? `${text.slice(0, FALLBACK_MAX_CHARS)}\n\n…(ответ обрезан)` : text
+  // marker so it's visibly distinct from a normal reply — a fallback means the agent
+  // forgot to call reply, which is itself a signal worth seeing.
   await bot.api
-    .sendMessage(target.chat_id, mdToHtml(body), { ...threadOpt, parse_mode: 'HTML' })
-    .catch(() => bot.api.sendMessage(target.chat_id, body, threadOpt))
+    .sendMessage(target.chat_id, `↩️ <i>авто-досыл</i>\n\n${mdToHtml(body)}`, { ...threadOpt, parse_mode: 'HTML' })
+    .catch(() => bot.api.sendMessage(target.chat_id, `↩️ авто-досыл\n\n${body}`, threadOpt))
     .catch(e => log(`reply-fallback send failed key=${key}: ${e}`))
   log(`reply-fallback: forwarded ${text.length} chars for key=${key} (agent never called reply)`)
 }
