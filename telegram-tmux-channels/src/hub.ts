@@ -121,7 +121,7 @@ const TTS_BASE_URL = process.env.TTS_OPENAI_BASE_URL || 'https://api.openai.com/
 // base for /bind <name>; absolute paths and ~/… still work
 const PROJECTS_DIR = process.env.TELEGRAM_PROJECTS_DIR || join(homedir(), 'projects')
 
-// Prepend a "⚠️ Контекст NN%" line to agent replies once context usage reaches this %.
+// Append a "⚠️ Контекст NN%" line to agent replies once context usage reaches this %.
 // 0 (or invalid) disables it. Configurable via TELEGRAM_CONTEXT_WARN_PCT (default 80).
 const CONTEXT_WARN_PCT = (() => {
   const n = Number(process.env.TELEGRAM_CONTEXT_WARN_PCT ?? '80')
@@ -294,7 +294,7 @@ async function doReply(conn: Socket<undefined>, params: Record<string, unknown>)
     const pane = router.get(conn)?.pane
     const pct = pane ? parseContextPct(await capturePane(pane).catch(() => '')) : undefined
     if (pct != null && pct >= CONTEXT_WARN_PCT) {
-      text = `⚠️ Контекст: ${pct}%\n\n${text}`
+      text = `${text}\n\n⚠️ Контекст: ${pct}%` // снизу — чтобы не отодвигать сам ответ вниз экрана
     }
   }
 
@@ -1348,6 +1348,101 @@ async function renderScreenPng(pane: string): Promise<Uint8Array | undefined> {
   }
 }
 
+// /screen live view: one self-updating photo message + a Close button that fully deletes it —
+// /screen is a debug aid that otherwise litters the history. renderScreenPng spawns headless
+// chrome (~1-2s), so refresh only when the pane text actually changed (cheap capturePane
+// compare); auto-stop refreshing after SCREEN_LIVE_MS so an abandoned view doesn't render forever
+// (the message + Close button stay so it can still be dismissed).
+type LiveScreen = { chatId: string; threadId?: number; msgId: number; pane: string; lastText: string; timer?: ReturnType<typeof setInterval> }
+const liveScreens = new Map<string, LiveScreen>() // token -> view
+let screenSeq = 0
+const SCREEN_REFRESH_MS = 3000
+const SCREEN_LIVE_MS = 3 * 60_000
+
+const closeKb = (token: string) => new InlineKeyboard().text('✖️ Закрыть', `scrclose:${token}`)
+// live timestamp in the caption — so it's visibly "alive" even when the pane content is static
+const screenCap = (pane: string, note?: string) =>
+  `🖥 <code>${escHtml(pane)}</code> · ${note ?? new Date().toLocaleTimeString('ru-RU')}`
+
+function closeLiveScreen(token: string): LiveScreen | undefined {
+  const v = liveScreens.get(token)
+  if (v) {
+    if (v.timer) clearInterval(v.timer)
+    liveScreens.delete(token)
+  }
+  return v
+}
+
+// auto-stop refreshing but KEEP the entry + message + Close button (so it can still be dismissed)
+function stopRefreshing(token: string): void {
+  const v = liveScreens.get(token)
+  if (!v?.timer) {
+    return
+  }
+  clearInterval(v.timer)
+  v.timer = undefined
+  void bot.api
+    .editMessageCaption(v.chatId, v.msgId, { caption: screenCap(v.pane, 'обновление остановлено'), parse_mode: 'HTML', reply_markup: closeKb(token) })
+    .catch(() => {})
+}
+
+async function refreshLiveScreen(token: string): Promise<void> {
+  const v = liveScreens.get(token)
+  if (!v) {
+    return
+  }
+  const text = await capturePane(v.pane).catch(() => '')
+  if (text === v.lastText) {
+    // pane unchanged — just tick the caption (cheap, no chrome), so it's visibly live
+    await bot.api
+      .editMessageCaption(v.chatId, v.msgId, { caption: screenCap(v.pane), parse_mode: 'HTML', reply_markup: closeKb(token) })
+      .catch(() => {})
+    return
+  }
+  v.lastText = text
+  const png = await renderScreenPng(v.pane).catch(() => undefined)
+  if (!png) {
+    return
+  }
+  // editMessageMedia drops the inline keyboard unless it's re-sent — keep the Close button
+  await bot.api
+    .editMessageMedia(
+      v.chatId,
+      v.msgId,
+      { type: 'photo', media: new InputFile(png, 'screen.png'), caption: screenCap(v.pane), parse_mode: 'HTML' },
+      { reply_markup: closeKb(token) },
+    )
+    .catch(() => {})
+}
+
+async function startLiveScreen(chatId: string, threadId: number | undefined, pane: string): Promise<void> {
+  const token = String(++screenSeq)
+  const kb = closeKb(token)
+  const threadOpt = threadId != null ? { message_thread_id: threadId } : {}
+  const png = await renderScreenPng(pane).catch(() => undefined)
+  if (png) {
+    const sent = await bot.api
+      .sendPhoto(chatId, new InputFile(png, 'screen.png'), { ...threadOpt, caption: screenCap(pane), parse_mode: 'HTML', reply_markup: kb })
+      .catch(() => undefined)
+    if (sent) {
+      const lastText = await capturePane(pane).catch(() => '')
+      const timer = setInterval(() => void refreshLiveScreen(token), SCREEN_REFRESH_MS)
+      liveScreens.set(token, { chatId, ...(threadId != null ? { threadId } : {}), msgId: sent.message_id, pane, lastText, timer })
+      setTimeout(() => stopRefreshing(token), SCREEN_LIVE_MS) // stop refreshing; Close still works
+      return
+    }
+  }
+  // no chrome / photo failed → static text screen (still with a Close button)
+  const text = await capturePane(pane).catch(() => '')
+  const tail = text.length > 3600 ? text.slice(-3600) : text
+  const sent = await bot.api
+    .sendMessage(chatId, `🖥 <code>${escHtml(pane)}</code>\n<pre>${escHtml(tail)}</pre>`, { ...threadOpt, parse_mode: 'HTML', reply_markup: kb })
+    .catch(() => undefined)
+  if (sent) {
+    liveScreens.set(token, { chatId, ...(threadId != null ? { threadId } : {}), msgId: sent.message_id, pane, lastText: tail })
+  }
+}
+
 // tmux+launch for a binding — shared by /resume,/new and auto-topic creation
 async function spawnSession(
   key: string,
@@ -1647,7 +1742,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
   if (ops && (!ops.bot || ops.bot.toLowerCase() === botUsername.toLowerCase())) {
     pendingTopics.delete(key)
     pendingModeChoice.delete(key)
-    await handleOps({ cmd: ops.cmd, arg: ops.arg, key, chat_id, threadId, senderId })
+    await handleOps({ cmd: ops.cmd, arg: ops.arg, key, chat_id, threadId, senderId, ...(msgId != null ? { msgId } : {}) })
     return
   }
 
@@ -1843,9 +1938,10 @@ type OpsRequest = {
   chat_id: string
   threadId?: number
   senderId: string
+  msgId?: number // the user's command message — /screen deletes it to keep history clean
 }
 
-async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequest): Promise<void> {
+async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: OpsRequest): Promise<void> {
   const threadOpt = threadId != null ? { message_thread_id: threadId } : {}
   const say = (html: string) =>
     bot.api.sendMessage(chat_id, html, { ...threadOpt, parse_mode: 'HTML' }).catch(() => {})
@@ -2008,23 +2104,14 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId }: OpsRequ
           await sendKeys(s.pane, 'Enter')
           void say('⏎ <b>Enter</b> отправлен.')
         } else if (cmd === 'screen') {
-          // Universal 1:1 view of the pane — the escape hatch for any TUI state
-          // the picker bridge doesn't recognize. PNG через headless chrome
-          // (свой ANSI→HTML, без сторонних утилит); нет chrome/сбой → текст.
-          const png = await renderScreenPng(s.pane).catch(e => (log(`screen png failed: ${e}`), undefined))
-          const sent = png
-            ? await bot.api
-                .sendPhoto(chat_id, new InputFile(png, 'screen.png'), {
-                  ...(threadId != null ? { message_thread_id: threadId } : {}),
-                  caption: `🖥 ${s.pane}`,
-                })
-                .then(() => true)
-                .catch(e => (log(`screen photo send failed: ${e}`), false))
-            : false
-          if (!sent) {
-            const text = await capturePane(s.pane)
-            const tail = text.length > 3800 ? text.slice(-3800) : text
-            void say(`🖥 <code>${escHtml(s.pane)}</code>\n<pre>${escHtml(tail)}</pre>`)
+          // Universal 1:1 view of the pane — the escape hatch for any TUI state the picker
+          // bridge doesn't recognize. Live, self-updating message with a Close button (deletes
+          // it) instead of a one-shot photo, so the debug view doesn't pile up in history.
+          await startLiveScreen(chat_id, threadId, s.pane)
+          // drop the "/screen" command itself too (works where the bot can delete — groups; a
+          // DM won't let a bot delete the user's message, hence best-effort).
+          if (msgId != null) {
+            void bot.api.deleteMessage(chat_id, msgId).catch(() => {})
           }
         } else if (cmd === 'model') {
           // Typed as real keystrokes (not a message-event) so the CLI opens its
@@ -2300,6 +2387,15 @@ bot.on('message:sticker', async ctx => {
 })
 
 bot.on('callback_query:data', async ctx => {
+  const sc = /^scrclose:(\S+)$/.exec(ctx.callbackQuery.data)
+  if (sc) {
+    const v = closeLiveScreen(sc[1])
+    if (v) {
+      await bot.api.deleteMessage(v.chatId, v.msgId).catch(() => {})
+    }
+    await ctx.answerCallbackQuery({ text: 'Закрыто' }).catch(() => {})
+    return
+  }
   const tm = /^topicmode:(.+):(folder|worktree)$/.exec(ctx.callbackQuery.data)
   if (tm) {
     const [, key, modeStr] = tm
