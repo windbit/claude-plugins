@@ -62,12 +62,16 @@ function codePath(p: string): string {
 // Telegram's typing action already lives ~5s, so refreshing faster is pure waste —
 // and with several topics of one supergroup all nudging every poll tick it burst-hit
 // the per-CHAT sendChatAction limit (429 retry-after), dropping the indicator at random.
-// ponytail: per-(chat,thread) 4s throttle — under 5s so the indicator never lapses.
+// per-(chat,thread) throttle. Effective interval ≈ throttle rounded UP to the poll granularity
+// (1.5s): a 4s throttle actually re-sent every ~4.5s — only 0.5s under Telegram's ~5s typing
+// lifetime, so any jitter let the indicator lapse (measured). 3s → ~3s interval, comfortable
+// margin, while still far below the every-1.5s rate that first triggered 429 (and auto-retry
+// now backs up the rare 429 anyway).
 const lastTyping = new Map<string, number>()
 function typing(chatId: string, threadId?: number): void {
   const k = `${chatId}:${threadId ?? ''}`
   const now = Date.now()
-  if (now - (lastTyping.get(k) ?? 0) < 4000) {
+  if (now - (lastTyping.get(k) ?? 0) < 3000) {
     return
   }
   lastTyping.set(k, now)
