@@ -749,7 +749,18 @@ async function forwardFallbackReply(key: string): Promise<void> {
     return
   }
   pendingAnswer.delete(key) // one shot per inbound, whatever the transcript holds
-  const text = lastAssistantText(pending.dir, pending.at)
+  // The Stop hook that triggers turnend beats the transcript flush by a few hundred ms
+  // (measured: text stamped .484s, hook fired same second) — poll briefly for the turn's
+  // final text before giving up. A genuinely tool-only turn just polls out to '' and stays
+  // silent; the happy path (agent DID reply) never reaches here — egress cleared pending.
+  let text = ''
+  for (let i = 0; i < 8; i++) {
+    text = lastAssistantText(pending.dir, pending.at)
+    if (text) {
+      break
+    }
+    await new Promise(r => setTimeout(r, 400)) // up to ~3.2s for the flush to land
+  }
   if (!text || lastFallback.get(key) === text) {
     return // no fresh textual answer this turn, or already forwarded
   }

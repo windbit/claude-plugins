@@ -74,7 +74,10 @@ export function recentSessions(dir: string, limit = 5): RecentSession[] {
 // answer from an earlier turn.
 export function lastAssistantText(dir: string, sinceMs: number): string {
   const newest = [...jsonlMtimes(dir).entries()].sort((a, b) => b[1] - a[1])[0]
-  if (!newest || newest[1] < sinceMs) {
+  // mtime is only a cheap "was this file touched around the turn" pre-filter — filesystems
+  // truncate it (often to whole seconds), so allow 2s of slack. The per-message timestamp
+  // below is the authoritative staleness guard.
+  if (!newest || newest[1] < sinceMs - 2000) {
     return ''
   }
   let buf: string
