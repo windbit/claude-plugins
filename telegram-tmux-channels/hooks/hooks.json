@@ -72,6 +72,17 @@
             "async": true
           }
         ]
+      },
+      {
+        "matcher": "^TodoWrite$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun ${CLAUDE_PLUGIN_ROOT}/src/subagent-hook.ts todo",
+            "timeout": 3,
+            "async": true
+          }
+        ]
       }
     ],
     "Stop": [

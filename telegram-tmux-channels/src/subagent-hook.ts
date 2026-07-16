@@ -19,7 +19,7 @@ const bindingKeys = (process.env.TELEGRAM_BINDING_KEYS ?? '')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean)
-const VALID_MODES = new Set(['describe', 'start', 'stop', 'turnend', 'task-create', 'task-update', 'skill'])
+const VALID_MODES = new Set(['describe', 'start', 'stop', 'turnend', 'task-create', 'task-update', 'skill', 'todo'])
 
 async function main(): Promise<void> {
   if (bindingKeys.length === 0 || !mode || !VALID_MODES.has(mode)) {
@@ -67,6 +67,16 @@ async function main(): Promise<void> {
     }
     const args = toolInput?.args ? String(toolInput.args) : undefined
     msg = { op: 'skill', bindingKeys, skill, ...(args ? { args } : {}) }
+  } else if (mode === 'todo') {
+    const toolInput = data.tool_input as Record<string, unknown> | undefined
+    const raw = Array.isArray(toolInput?.todos) ? (toolInput.todos as Record<string, unknown>[]) : []
+    const todos = raw
+      .map(t => ({ content: String(t.content ?? ''), status: String(t.status ?? 'pending') }))
+      .filter(t => t.content)
+    if (!todos.length) {
+      return
+    }
+    msg = { op: 'todo', bindingKeys, todos }
   } else if (mode === 'describe') {
     const promptId = String(data.prompt_id ?? '')
     const toolInput = data.tool_input as Record<string, unknown> | undefined

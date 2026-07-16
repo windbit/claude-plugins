@@ -32,6 +32,9 @@ export type StubToHub =
   | { op: 'task'; action: 'update'; bindingKeys: string[]; taskId: string; status: string }
   // Skill tool invocation (PreToolUse ^Skill$) — no lifecycle, one event per call
   | { op: 'skill'; bindingKeys: string[]; skill: string; args?: string }
+  // TodoWrite (the ⊡/✓ checklist tool, distinct from TaskCreate/Update) — carries the FULL
+  // list on every call, so no per-item lifecycle; the hub just re-renders one message
+  | { op: 'todo'; bindingKeys: string[]; todos: { content: string; status: string }[] }
 
 export type HubToStub =
   | { op: 'event'; kind: 'message'; content: string; meta: Record<string, string> }

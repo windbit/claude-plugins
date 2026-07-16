@@ -1008,6 +1008,46 @@ async function handleTaskEvent(msg: Extract<StubToHub, { op: 'task' }>): Promise
   }
 }
 
+// TodoWrite (the ⊡/✓ checklist tool) — carries the FULL list each call, so no per-item lifecycle:
+// just re-render one self-editing message per turn. Fresh message on a turn boundary (reuses
+// turnEnded), like tasks. Reservation guard (msgId=-1) against a rare back-to-back double-send.
+type Todo = { content: string; status: string }
+const todoMessages = new Map<string, { chatId: string; threadId?: number; msgId: number }>()
+
+function renderTodoText(todos: Todo[]): string {
+  const glyph = (s: string) => (s === 'completed' ? '✅' : s === 'in_progress' ? '🟡' : '⏳')
+  const lines = todos.map(t => `${glyph(t.status)} ${escHtml(t.content)}`)
+  return ['📝 <b>Тудушки</b>', '', ...lines].join('\n')
+}
+
+async function handleTodoEvent(msg: Extract<StubToHub, { op: 'todo' }>): Promise<void> {
+  for (const key of msg.bindingKeys) {
+    if (turnEnded.get(key) ?? true) {
+      todoMessages.delete(key) // new turn — start a fresh message at the bottom
+    }
+    turnEnded.set(key, false)
+    const text = renderTodoText(msg.todos)
+    const tracked = todoMessages.get(key)
+    if (!tracked) {
+      const target = keyToTarget(key)
+      todoMessages.set(key, { chatId: target.chat_id, ...(target.thread_id != null ? { threadId: target.thread_id } : {}), msgId: -1 }) // reserve
+      const sent = await bot.api
+        .sendMessage(target.chat_id, text, { ...(target.thread_id != null ? { message_thread_id: target.thread_id } : {}), parse_mode: 'HTML' })
+        .catch(() => undefined)
+      if (sent) {
+        todoMessages.set(key, { chatId: target.chat_id, ...(target.thread_id != null ? { threadId: target.thread_id } : {}), msgId: sent.message_id })
+      } else if (todoMessages.get(key)?.msgId === -1) {
+        todoMessages.delete(key)
+      }
+      continue
+    }
+    if (tracked.msgId === -1) {
+      continue // first send in flight
+    }
+    await bot.api.editMessageText(tracked.chatId, tracked.msgId, text, { parse_mode: 'HTML' }).catch(() => {})
+  }
+}
+
 // Skill invocations — same per-turn self-editing message as tasks, но append-only:
 // у Skill нет жизненного цикла, одно PreToolUse-событие на вызов.
 type SkillCall = { skill: string; args?: string }
@@ -1235,6 +1275,9 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
   }
   if (msg.op === 'skill') {
     await handleSkillEvent(msg)
+  }
+  if (msg.op === 'todo') {
+    await handleTodoEvent(msg)
   }
 }
 
