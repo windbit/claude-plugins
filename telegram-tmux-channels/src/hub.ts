@@ -40,6 +40,7 @@ import {
 } from './trusted-groups'
 import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree } from './dir-resolve'
 import { jsonlMtimes, captureNewSessionId, recentSessions, lastAssistantText, newestJsonlSize } from './session-id'
+import { HubStateRepository } from './state-repo'
 import { recordChat, chatLabel } from './known-chats'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
@@ -792,6 +793,15 @@ const pendingDescriptions = new Map<string, string>()
 // path — this only fires on a genuine miss, so no spam and no lost answers.
 const pendingAnswer = new Map<string, { dir: string; at: number }>() // key -> inbound awaiting a reply
 const lastFallback = new Map<string, string>() // key -> last auto-forwarded text (turnend can fire twice)
+// Persist the two above so a hub restart between an inbound and the agent's reply no longer wipes
+// the pending marker (the fallback would then never fire). Maps stay the runtime source of truth;
+// the repo mirrors them to disk and rehydrates on boot.
+const stateRepo = new HubStateRepository(log)
+for (const [k, v] of stateRepo.pendingEntries()) pendingAnswer.set(k, v)
+for (const [k, v] of stateRepo.fallbackEntries()) lastFallback.set(k, v)
+function armPending(key: string, v: { dir: string; at: number }): void { pendingAnswer.set(key, v); stateRepo.setPending(key, v) }
+function disarmPending(key: string): void { pendingAnswer.delete(key); stateRepo.delPending(key) }
+function recordFallback(key: string, text: string): void { lastFallback.set(key, text); stateRepo.setFallback(key, text) }
 const FALLBACK_MAX_CHARS = 3500 // cap the safety-net forward; a huge answer gets truncated, not spammed
 
 // ── skill slash-commands ──
@@ -918,7 +928,7 @@ async function injectSlashToPanes(
     }
     typing(chat_id, threadId)
     snapshotScreens(key, cmdText, conns)
-    pendingAnswer.set(key, { dir, at: Date.now() }) // reply-fallback armed
+    armPending(key, { dir, at: Date.now() }) // reply-fallback armed
   }
   return typed
 }
@@ -927,7 +937,7 @@ async function injectSlashToPanes(
 // so turnend won't also forward. Called only after the egress send actually succeeded.
 function clearPendingAnswer(conn: Socket<undefined>): void {
   for (const k of ownKeys(conn)) {
-    pendingAnswer.delete(k)
+    disarmPending(k)
   }
 }
 
@@ -936,7 +946,7 @@ async function forwardFallbackReply(key: string): Promise<void> {
   if (!pending) {
     return
   }
-  pendingAnswer.delete(key) // one shot per inbound, whatever the transcript holds
+  disarmPending(key) // one shot per inbound, whatever the transcript holds
   // Wait for the turn's transcript writes to FINISH before reading — not just for some text
   // to appear. The Stop hook that triggers turnend fires mid-flush: when only an intermediate
   // preamble is on disk while the real final answer is still being written (seen live —
@@ -960,7 +970,7 @@ async function forwardFallbackReply(key: string): Promise<void> {
   if (!text || lastFallback.get(key) === text) {
     return // no fresh textual answer this turn, or already forwarded
   }
-  lastFallback.set(key, text)
+  recordFallback(key, text)
   const target = keyToTarget(key)
   const threadOpt = target.thread_id != null ? { message_thread_id: target.thread_id } : {}
   const body = text.length > FALLBACK_MAX_CHARS ? `${text.slice(0, FALLBACK_MAX_CHARS)}\n\n…(ответ обрезан)` : text
@@ -2111,7 +2121,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
       : {}),
   }
   snapshotScreens(key, text, conns)
-  pendingAnswer.set(key, { dir: binding.dir, at: Date.now() }) // armed until the agent replies or turnend forwards
+  armPending(key, { dir: binding.dir, at: Date.now() }) // armed until the agent replies or turnend forwards
   for (const conn of conns) {
     send(conn, { op: 'event', kind: 'message', content: text, meta })
   }
@@ -2911,6 +2921,7 @@ function shutdown(): void {
   }
   shuttingDown = true
   log('shutting down')
+  stateRepo.flush() // persist pending markers synchronously before exit
   try {
     if (parseInt(readFileSync(PID_FILE, 'utf8'), 10) === process.pid) {
       rmSync(PID_FILE)
@@ -2934,6 +2945,13 @@ void (async () => {
           rmQuiet(SPAWN_LOCK)
           log(`polling as @${info.username}`)
           void reviveBoundSessions() // host reboot: tmux died with it — bring sessions back
+          // A pending marker that survived a restart: the turnend that would have forwarded its
+          // answer may have fired while we were down, so re-check each once (reads the transcript,
+          // forwards a fresh unanswered answer, disarms). Delay so sessions/transcripts settle.
+          if (pendingAnswer.size > 0) {
+            log(`reply-fallback: rechecking ${pendingAnswer.size} pending marker(s) recovered from disk`)
+            setTimeout(() => { for (const key of [...pendingAnswer.keys()]) void forwardFallbackReply(key) }, 8000)
+          }
           // scoped-списки (например, от старого бота) перекрывают default в DM/группах — чистим
           void bot.api.deleteMyCommands({ scope: { type: 'all_private_chats' } }).catch(e => log(`deleteMyCommands: ${e}`))
           void bot.api.deleteMyCommands({ scope: { type: 'all_group_chats' } }).catch(e => log(`deleteMyCommands: ${e}`))
