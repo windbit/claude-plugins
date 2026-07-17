@@ -724,16 +724,61 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
 // its old (now-replaced) map the moment the next turn starts a fresh one.
 type SubagentStatus = { name: string; done: boolean }
 const activeSubagents = new Map<string, Map<string, SubagentStatus>>() // key -> agentId -> status
-const subagentMessages = new Map<string, { chatId: string; threadId?: number; msgId: number }>()
-// Per-tracker "a Stop happened since THIS tracker's last batch". Previously one shared flag —
-// but whichever tracker fired first in a turn (a skill, typically) flipped it false and stole the
-// "fresh turn" signal from the others, so a subagent spawned by that skill appended to a stale,
-// scrolled-off bubble instead of posting a new visible one (the "subagent invisible under a skill"
-// bug). One flag per tracker keeps subagent/task/todo/skill batch-detection independent.
-const turnEndedSub = new Map<string, boolean>()
-const turnEndedTask = new Map<string, boolean>()
-const turnEndedTodo = new Map<string, boolean>()
-const turnEndedSkill = new Map<string, boolean>()
+
+// One self-updating Telegram message per binding key, per turn: sent once, then edited in place
+// as state changes; a fresh batch (caller decides) starts a NEW message at the bottom. The
+// msgId=-1 reservation serialises the first send so racing events (a workflow fans out N agents
+// at once) don't each spawn their own bubble. Replaces four hand-rolled, subtly-divergent copies
+// of this logic — task and skill were missing the reservation and could double-send.
+//
+// Each tracker owns its own instance, so a Stop signal is per-tracker: whichever tracker fired
+// first in a turn no longer steals the "fresh turn" signal from the others (that was the
+// "subagent invisible under a skill" bug). Trackers compute `fresh` from sinceTurnEnd() combined
+// with their own "all done" rule, and pass it in — the message reset follows that decision.
+class PerTurnEditablePost {
+  private msg = new Map<string, number>() // key -> Telegram message id (-1 = first send in flight)
+  private turnEnded = new Map<string, boolean>() // key -> a Stop happened since this post's last batch
+  endTurn(key: string): void { this.turnEnded.set(key, true) }
+  sinceTurnEnd(key: string): boolean { return this.turnEnded.get(key) ?? true }
+  forget(key: string): void { this.msg.delete(key); this.turnEnded.delete(key) }
+
+  // `render` returns the HTML for the current domain state; it is called again after the first
+  // send to fold in state that changed during the await. `fresh` = the caller's "new batch" call.
+  async update(key: string, fresh: boolean, render: () => string): Promise<void> {
+    if (fresh) {
+      this.msg.delete(key) // new batch — start a fresh message at the bottom
+    }
+    this.turnEnded.set(key, false)
+    const { chat_id, thread_id } = keyToTarget(key)
+    const threadOpt = thread_id != null ? { message_thread_id: thread_id } : {}
+    const existing = this.msg.get(key)
+    if (existing === undefined) {
+      this.msg.set(key, -1) // reserve synchronously before the await
+      const text = render()
+      const sent = await bot.api
+        .sendMessage(chat_id, text, { ...threadOpt, parse_mode: 'HTML' })
+        .catch(() => undefined)
+      if (!sent) {
+        if (this.msg.get(key) === -1) this.msg.delete(key) // send failed — release the reservation
+        return
+      }
+      this.msg.set(key, sent.message_id)
+      const latest = render() // events that raced in while sending skipped their edit — re-render now
+      if (latest !== text) {
+        await bot.api.editMessageText(chat_id, sent.message_id, latest, { parse_mode: 'HTML' }).catch(() => {})
+      }
+      return
+    }
+    if (existing === -1) {
+      return // first send still in flight — the post-send re-render above will pick up this state
+    }
+    await bot.api.editMessageText(chat_id, existing, render(), { parse_mode: 'HTML' }).catch(() => {})
+  }
+}
+const subPost = new PerTurnEditablePost()
+const taskPost = new PerTurnEditablePost()
+const todoPost = new PerTurnEditablePost()
+const skillPost = new PerTurnEditablePost()
 // PreToolUse(Agent) fires before SubagentStart and carries the human description;
 // SubagentStart itself only has agent_id/agent_type — correlate the two via promptId.
 const pendingDescriptions = new Map<string, string>()
@@ -957,10 +1002,10 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
   if (msg.action === 'turnend') {
     log(`subagent: turnend keys=${msg.bindingKeys.join(',')}`)
     for (const key of msg.bindingKeys) {
-      turnEndedSub.set(key, true)
-      turnEndedTask.set(key, true)
-      turnEndedTodo.set(key, true)
-      turnEndedSkill.set(key, true)
+      subPost.endTurn(key)
+      taskPost.endTurn(key)
+      todoPost.endTurn(key)
+      skillPost.endTurn(key)
       await forwardFallbackReply(key) // agent didn't reply → forward its final text ourselves
     }
     return
@@ -973,19 +1018,16 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
   }
   for (const key of msg.bindingKeys) {
     let agents = activeSubagents.get(key)
+    let fresh = false
     if (msg.action === 'start') {
       const allDone = !agents || [...agents.values()].every(a => a.done)
-      const fresh = allDone && (turnEndedSub.get(key) ?? true)
+      fresh = allDone && subPost.sinceTurnEnd(key)
       // !agents must force a fresh map even when fresh is false, or the `agents!.set` below
       // throws on undefined (e.g. first-ever subagent for this key mid-turn).
       if (fresh || !agents) {
         agents = new Map()
         activeSubagents.set(key, agents)
-        if (fresh) {
-          subagentMessages.delete(key) // previous batch is fully wrapped up — start a fresh one
-        }
       }
-      turnEndedSub.set(key, false) // at least one agent is running again — batch stays open
       const description = pendingDescriptions.get(msg.promptId)
       if (description) {
         pendingDescriptions.delete(msg.promptId)
@@ -1002,36 +1044,9 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
     if (!agents) {
       continue // stop event with nothing tracked (e.g. hub restarted mid-batch) — nothing to say
     }
-    const text = renderSubagentText([...agents.values()])
-    const tracked = subagentMessages.get(key)
-    if (!tracked) {
-      const target = keyToTarget(key)
-      // reserve the slot SYNCHRONOUSLY before the await — a workflow fans out N agents at once,
-      // so N start events race here; without the reservation each sees "no message" and sends
-      // its own, spamming N separate bubbles instead of one self-editing message.
-      subagentMessages.set(key, { chatId: target.chat_id, ...(target.thread_id != null ? { threadId: target.thread_id } : {}), msgId: -1 })
-      const sent = await bot.api
-        .sendMessage(target.chat_id, text, {
-          ...(target.thread_id != null ? { message_thread_id: target.thread_id } : {}),
-          parse_mode: 'HTML',
-        })
-        .catch(() => undefined)
-      if (!sent) {
-        subagentMessages.delete(key) // send failed — release the reservation
-        continue
-      }
-      subagentMessages.set(key, { chatId: target.chat_id, ...(target.thread_id != null ? { threadId: target.thread_id } : {}), msgId: sent.message_id })
-      // events that raced in while we were sending skipped their edit (msgId was -1) — re-render now
-      const latest = renderSubagentText([...agents.values()])
-      if (latest !== text) {
-        await bot.api.editMessageText(target.chat_id, sent.message_id, latest, { parse_mode: 'HTML' }).catch(() => {})
-      }
-      continue
-    }
-    if (tracked.msgId === -1) {
-      continue // first send still in flight — the post-send re-render above will pick up this state
-    }
-    await bot.api.editMessageText(tracked.chatId, tracked.msgId, text, { parse_mode: 'HTML' }).catch(() => {})
+    // live thunk (not a snapshot): the post-send re-render inside update() must see agents that
+    // racing start/stop events mutated during the await.
+    await subPost.update(key, fresh, () => renderSubagentText([...agents!.values()]))
   }
 }
 
@@ -1178,12 +1193,11 @@ async function handleErrors(pane: string, session: SessionInfo, text: string): P
     .catch(e => log(`error-notify failed: pane=${pane} ${e}`))
 }
 
-// Task-list tracking, fed by TaskCreate/TaskUpdate hooks — same self-editing-message and
-// same turn-boundary idea as subagents above (own turnEndedTask flag), but no promptId dance:
-// id/subject/status come straight off one PostToolUse event each.
+// Task-list tracking, fed by TaskCreate/TaskUpdate hooks — same self-editing message (taskPost)
+// and turn-boundary idea as subagents above, but no promptId dance: id/subject/status come
+// straight off one PostToolUse event each.
 type TaskStatus = { subject: string; status: string }
 const activeTasks = new Map<string, Map<string, TaskStatus>>() // key -> taskId -> status
-const taskMessages = new Map<string, { chatId: string; threadId?: number; msgId: number }>()
 
 function renderTaskText(items: TaskStatus[]): string {
   const glyph = (s: string) => (s === 'completed' ? '✅' : s === 'in_progress' ? '🟡' : '⏳')
@@ -1194,18 +1208,15 @@ function renderTaskText(items: TaskStatus[]): string {
 async function handleTaskEvent(msg: Extract<StubToHub, { op: 'task' }>): Promise<void> {
   for (const key of msg.bindingKeys) {
     let tasks = activeTasks.get(key)
+    let fresh = false
     if (msg.action === 'create') {
       const allDone = !tasks || [...tasks.values()].every(t => t.status === 'completed')
-      const fresh = allDone && (turnEndedTask.get(key) ?? true)
+      fresh = allDone && taskPost.sinceTurnEnd(key)
       // !tasks must force init even when fresh is false (first task for this key mid-turn).
       if (fresh || !tasks) {
         tasks = new Map()
         activeTasks.set(key, tasks)
-        if (fresh) {
-          taskMessages.delete(key)
-        }
       }
-      turnEndedTask.set(key, false)
       tasks.set(msg.taskId, { subject: msg.subject, status: 'pending' })
       log(`task: create key=${key} taskId=${msg.taskId} fresh=${fresh} subject="${msg.subject}"`)
     } else {
@@ -1218,30 +1229,14 @@ async function handleTaskEvent(msg: Extract<StubToHub, { op: 'task' }>): Promise
     if (!tasks) {
       continue
     }
-    const text = renderTaskText([...tasks.values()])
-    const tracked = taskMessages.get(key)
-    if (!tracked) {
-      const target = keyToTarget(key)
-      const sent = await bot.api
-        .sendMessage(target.chat_id, text, {
-          ...(target.thread_id != null ? { message_thread_id: target.thread_id } : {}),
-          parse_mode: 'HTML',
-        })
-        .catch(() => undefined)
-      if (sent) {
-        taskMessages.set(key, { chatId: target.chat_id, ...(target.thread_id != null ? { threadId: target.thread_id } : {}), msgId: sent.message_id })
-      }
-      continue
-    }
-    await bot.api.editMessageText(tracked.chatId, tracked.msgId, text, { parse_mode: 'HTML' }).catch(() => {})
+    await taskPost.update(key, fresh, () => renderTaskText([...tasks!.values()]))
   }
 }
 
 // TodoWrite (the ⊡/✓ checklist tool) — carries the FULL list each call, so no per-item lifecycle:
 // just re-render one self-editing message per turn. Fresh message on a turn boundary (reuses
-// own turnEndedTodo flag), like tasks. Reservation guard (msgId=-1) against a rare back-to-back double-send.
+// (todoPost), like tasks. The full list arrives each call, so no per-item domain state.
 type Todo = { content: string; status: string }
-const todoMessages = new Map<string, { chatId: string; threadId?: number; msgId: number }>()
 
 function renderTodoText(todos: Todo[]): string {
   const glyph = (s: string) => (s === 'completed' ? '✅' : s === 'in_progress' ? '🟡' : '⏳')
@@ -1251,29 +1246,8 @@ function renderTodoText(todos: Todo[]): string {
 
 async function handleTodoEvent(msg: Extract<StubToHub, { op: 'todo' }>): Promise<void> {
   for (const key of msg.bindingKeys) {
-    if (turnEndedTodo.get(key) ?? true) {
-      todoMessages.delete(key) // new turn — start a fresh message at the bottom
-    }
-    turnEndedTodo.set(key, false)
-    const text = renderTodoText(msg.todos)
-    const tracked = todoMessages.get(key)
-    if (!tracked) {
-      const target = keyToTarget(key)
-      todoMessages.set(key, { chatId: target.chat_id, ...(target.thread_id != null ? { threadId: target.thread_id } : {}), msgId: -1 }) // reserve
-      const sent = await bot.api
-        .sendMessage(target.chat_id, text, { ...(target.thread_id != null ? { message_thread_id: target.thread_id } : {}), parse_mode: 'HTML' })
-        .catch(() => undefined)
-      if (sent) {
-        todoMessages.set(key, { chatId: target.chat_id, ...(target.thread_id != null ? { threadId: target.thread_id } : {}), msgId: sent.message_id })
-      } else if (todoMessages.get(key)?.msgId === -1) {
-        todoMessages.delete(key)
-      }
-      continue
-    }
-    if (tracked.msgId === -1) {
-      continue // first send in flight
-    }
-    await bot.api.editMessageText(tracked.chatId, tracked.msgId, text, { parse_mode: 'HTML' }).catch(() => {})
+    const todos = msg.todos // TodoWrite carries the full list each call — no per-item domain state
+    await todoPost.update(key, todoPost.sinceTurnEnd(key), () => renderTodoText(todos))
   }
 }
 
@@ -1281,7 +1255,6 @@ async function handleTodoEvent(msg: Extract<StubToHub, { op: 'todo' }>): Promise
 // у Skill нет жизненного цикла, одно PreToolUse-событие на вызов.
 type SkillCall = { skill: string; args?: string }
 const activeSkills = new Map<string, SkillCall[]>() // key -> calls this turn
-const skillMessages = new Map<string, { chatId: string; msgId: number }>()
 
 function renderSkillText(items: SkillCall[]): string {
   return items.map(i => `🧩 Скилл: <b>${escHtml(i.skill)}</b>${i.args ? ` — <i>${escHtml(i.args)}</i>` : ''}`).join('\n')
@@ -1290,30 +1263,14 @@ function renderSkillText(items: SkillCall[]): string {
 async function handleSkillEvent(msg: Extract<StubToHub, { op: 'skill' }>): Promise<void> {
   for (const key of msg.bindingKeys) {
     let skills = activeSkills.get(key)
-    if (!skills || (turnEndedSkill.get(key) ?? true)) {
+    const fresh = !skills || skillPost.sinceTurnEnd(key) // append-only within a turn
+    if (fresh || !skills) {
       skills = []
       activeSkills.set(key, skills)
-      skillMessages.delete(key)
     }
-    turnEndedSkill.set(key, false)
     skills.push({ skill: msg.skill, ...(msg.args ? { args: msg.args } : {}) })
     log(`skill: key=${key} skill=${msg.skill}${msg.args ? ` args="${msg.args}"` : ''}`)
-    const text = renderSkillText(skills)
-    const tracked = skillMessages.get(key)
-    if (!tracked) {
-      const target = keyToTarget(key)
-      const sent = await bot.api
-        .sendMessage(target.chat_id, text, {
-          ...(target.thread_id != null ? { message_thread_id: target.thread_id } : {}),
-          parse_mode: 'HTML',
-        })
-        .catch(() => undefined)
-      if (sent) {
-        skillMessages.set(key, { chatId: target.chat_id, msgId: sent.message_id })
-      }
-      continue
-    }
-    await bot.api.editMessageText(tracked.chatId, tracked.msgId, text, { parse_mode: 'HTML' }).catch(() => {})
+    await skillPost.update(key, fresh, () => renderSkillText(skills!))
   }
 }
 
