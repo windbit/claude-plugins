@@ -1,1 +1,5 @@
 node_modules/
+
+# Local test-harness secrets (bot token, chat/topic ids) — never in the public repo
+*.env
+!*.env.example
