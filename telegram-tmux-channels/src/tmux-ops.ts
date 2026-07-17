@@ -3,12 +3,12 @@
 
 export type OpsCommand =
   | 'compact' | 'clear' | 'esc' | 'enter' | 'restart' | 'resume' | 'new' | 'status'
-  | 'bind' | 'unbind' | 'allow' | 'model' | 'stop' | 'screen' | 'delete'
+  | 'bind' | 'unbind' | 'allow' | 'model' | 'stop' | 'screen' | 'delete' | 'skills' | 'reload'
 
 export function parseOpsCommand(
   text: string,
 ): { cmd: OpsCommand; bot?: string; arg?: string } | undefined {
-  const m = /^\/(compact|clear|esc|enter|restart|resume|new|status|bind|unbind|allow|model|stop|screen|delete)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
+  const m = /^\/(compact|clear|esc|enter|restart|resume|new|status|bind|unbind|allow|model|stop|screen|delete|skills|reload)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
     text.trim(),
   )
   if (!m) {
@@ -39,6 +39,17 @@ export function parseCompaction(text: string): { pct: number; elapsed?: string }
   const pct = Number(barLine.match(/[▰▱]{5,}\s*(\d+)%/)![1])
   const el = lines[i].match(/\(([^)]+)\)/)
   return { pct, ...(el ? { elapsed: el[1] } : {}) }
+}
+
+// Claude Code's live "working" status footer: "<spinner> Gerund… (12s · ↓ 3.4k tokens · thinking)"
+// — a word ending in "…" immediately before "(<digit>". Detect it ONLY in the tail: an old
+// spinner scrolled up into history must not read as still-busy, and the idle bars
+// ("⏵⏵ bypass…", "new task? /clear…", "⎿ Done (…)") lack the "…(<digit>" shape. Used to keep
+// "typing…" alive even when two consecutive captures are byte-identical (elapsed hadn't ticked /
+// redraw lag), which a pure screen-diff would miss. Pure — tested in core.test.ts.
+export function paneIsWorking(text: string): boolean {
+  const tail = text.split('\n').filter(l => l.trim() !== '').slice(-8)
+  return tail.some(l => /(?:…|\.\.\.)\s*\(\s*\d/.test(l))
 }
 
 // Context-window usage % from the pane status line: "<pie> NN%  <bar> MM%  ⏱ …". The first

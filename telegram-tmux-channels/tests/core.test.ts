@@ -15,6 +15,7 @@ import {
   parseContextPct,
   parseError,
   parseWorkflow,
+  paneIsWorking,
 } from '../src/tmux-ops'
 import { isClaudeArgv, claudePidsInDir, cmdlineOf, findClaudeAncestor } from '../src/proc'
 import {
@@ -194,6 +195,18 @@ describe('tmux-ops', () => {
     expect(parseContextPct('  ● 93%  ░░░░ 2%  ⏱ 4h24m')).toBe(93)
     expect(parseContextPct('  ○ 0%  ░░░░░░░░░░ 3%')).toBe(0)
     expect(parseContextPct('❯ just some text, no status line')).toBeUndefined()
+  })
+  test('paneIsWorking: live working footer vs idle/done bars', () => {
+    // working spinner footers (must fire typing)
+    expect(paneIsWorking('some output\n✢ Spinning… (1m 27s · ↓ 3.7k tokens)')).toBe(true)
+    expect(paneIsWorking('* Moonwalking… (17m 41s · ↓ 52.9k tokens · thinking)')).toBe(true)
+    expect(paneIsWorking('✢ Spinning... (2s)')).toBe(true) // ascii ellipsis early on
+    // idle / done bars (must NOT)
+    expect(paneIsWorking('  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents')).toBe(false)
+    expect(paneIsWorking('  new task? /clear to save 261.1k tokens')).toBe(false)
+    expect(paneIsWorking('⎿  Done (31 tool uses · 80.3k tokens · 4m 8s)')).toBe(false)
+    // an old spinner scrolled up into history (>8 lines from bottom) must not read as busy
+    expect(paneIsWorking('✢ Spinning… (1m 27s)\n' + Array(10).fill('x').join('\n') + '\n  ⏵⏵ bypass permissions on')).toBe(false)
   })
   test('parseError: banners vs prose', () => {
     // real banner, with the ⏺ bullet, near the bottom

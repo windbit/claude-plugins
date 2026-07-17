@@ -23,11 +23,12 @@ import { Router } from './router'
 import { chunk, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES, PHOTO_EXTS } from './chunk'
 import { mdToHtml } from './md-html'
 import {
-  parseOpsCommand, parseCompaction, parseContextPct, parseError, parseWorkflow, sendKeys, typeLine, selectOption, restartSession, stopSession, alive,
+  parseOpsCommand, parseCompaction, parseContextPct, parseError, parseWorkflow, paneIsWorking, sendKeys, typeLine, selectOption, restartSession, stopSession, alive,
   hasTmuxSession, ensureTmuxSession, killTmuxSession, buildLaunch, shellQuote, ackStartupPrompts,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
 import { ansiToHtml } from './ansi-html'
+import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, tgDescription, type Skill } from './skills'
 import { claudePidsInDir } from './proc'
 import { readLimits, formatLimits } from './limits'
 import { rmQuiet } from './util'
@@ -602,8 +603,13 @@ function bindingAllowsKey(key: string, senderId: string): boolean {
   return loadBindings()[key]?.allow?.includes(senderId) ?? false
 }
 
+// A session's interactive prompts belong to Telegram ONLY if the hub spawned it —
+// hub-spawned sessions carry bindingKeys. A session without them is a hand-started
+// `claude` (the telegram stub is a global user-scope MCP, so every session connects); it
+// has no topic and must be ignored, otherwise a terminal session opened in a bound dir
+// would hijack that topic's pickers/messages via a cwd match. No dir-fallback on purpose.
 function pickerChatFor(session: SessionInfo): { chatId: string; threadId?: number } | undefined {
-  const key = session.bindingKeys?.[0] ?? (session.cwd ? keysForDir(loadBindings(), session.cwd)[0] : undefined)
+  const key = session.bindingKeys?.[0]
   if (!key) {
     return undefined
   }
@@ -719,7 +725,15 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
 type SubagentStatus = { name: string; done: boolean }
 const activeSubagents = new Map<string, Map<string, SubagentStatus>>() // key -> agentId -> status
 const subagentMessages = new Map<string, { chatId: string; threadId?: number; msgId: number }>()
-const turnEnded = new Map<string, boolean>() // has Stop fired since the batch's last start?
+// Per-tracker "a Stop happened since THIS tracker's last batch". Previously one shared flag —
+// but whichever tracker fired first in a turn (a skill, typically) flipped it false and stole the
+// "fresh turn" signal from the others, so a subagent spawned by that skill appended to a stale,
+// scrolled-off bubble instead of posting a new visible one (the "subagent invisible under a skill"
+// bug). One flag per tracker keeps subagent/task/todo/skill batch-detection independent.
+const turnEndedSub = new Map<string, boolean>()
+const turnEndedTask = new Map<string, boolean>()
+const turnEndedTodo = new Map<string, boolean>()
+const turnEndedSkill = new Map<string, boolean>()
 // PreToolUse(Agent) fires before SubagentStart and carries the human description;
 // SubagentStart itself only has agent_id/agent_type — correlate the two via promptId.
 const pendingDescriptions = new Map<string, string>()
@@ -734,6 +748,135 @@ const pendingDescriptions = new Map<string, string>()
 const pendingAnswer = new Map<string, { dir: string; at: number }>() // key -> inbound awaiting a reply
 const lastFallback = new Map<string, string>() // key -> last auto-forwarded text (turnend can fire twice)
 const FALLBACK_MAX_CHARS = 3500 // cap the safety-net forward; a huge answer gets truncated, not spammed
+
+// ── skill slash-commands ──
+// GLOBAL skills (user + enabled plugins) become bot commands so every chat gets native
+// /-autocomplete. The registered name is mangled (deep_research) and mapped back to the
+// real slash name (/deep-research) on invocation. PROJECT-local skills go through the
+// /skills button menu instead — Telegram command scopes are per-chat, not per-topic.
+const OPS_COMMANDS: { command: string; description: string }[] = [
+  { command: 'status', description: 'Статус сессии (папка/tmux/claude/лимиты)' },
+  { command: 'resume', description: 'Поднять сессию (с выбором, какую)' },
+  { command: 'screen', description: 'Показать экран сессии как есть' },
+  { command: 'new', description: 'Запустить свежую сессию' },
+  { command: 'skills', description: 'Проектные скиллы этой сессии (кнопками)' },
+  { command: 'reload', description: 'Пересканировать скиллы плагинов → команды' },
+  { command: 'compact', description: 'Отправить /compact в сессию' },
+  { command: 'clear', description: 'Очистить историю сессии' },
+  { command: 'esc', description: 'Прервать текущий ход' },
+  { command: 'enter', description: 'Отправить Enter (сабмитнуть строку ввода)' },
+  { command: 'model', description: 'Выбрать модель (интерактивно, кнопками)' },
+  { command: 'stop', description: 'Остановить сессию (graceful /exit → Ctrl-C)' },
+  { command: 'restart', description: 'Аккуратный перезапуск сессии' },
+  { command: 'bind', description: 'Привязать этот чат/топик к папке проекта (админ)' },
+  { command: 'unbind', description: 'Снять привязку (админ)' },
+  { command: 'delete', description: 'Снять привязку + удалить топик (админ)' },
+  { command: 'allow', description: 'Дать доступ пользователю к этому биндингу (админ)' },
+]
+const TG_CMD_MAX = 100 // Telegram's hard cap on bot commands
+const OPS_NAMES = new Set(OPS_COMMANDS.map(c => c.command))
+let globalSkillMap = new Map<string, string>() // mangled command → real skill name
+
+// Rediscover global skills and (re)register the bot command list. Returns a summary.
+async function refreshCommands(): Promise<string> {
+  let skills: Skill[]
+  try {
+    skills = await discoverGlobalSkills()
+  } catch (e) {
+    log(`refreshCommands: discover failed: ${e}`)
+    return '⚠️ Не смог просканировать скиллы.'
+  }
+  const map = new Map<string, string>()
+  const cmds: { command: string; description: string }[] = []
+  let dropped = 0
+  for (const s of skills) {
+    const cmd = mangleCmd(s.name)
+    // empty, clashes with an ops command, a mangling clash, or over Telegram's cap —
+    // skip. Overflow skills stay runnable: typing "/name" still routes to the pane.
+    if (!cmd || OPS_NAMES.has(cmd) || map.has(cmd) || OPS_COMMANDS.length + cmds.length >= TG_CMD_MAX) {
+      dropped++
+      continue
+    }
+    map.set(cmd, s.name)
+    cmds.push({ command: cmd, description: tgDescription(s.description) })
+  }
+  globalSkillMap = map
+  // Telegram also caps the TOTAL size of the command list (~5k description chars), not
+  // just the count — it rejects with BOT_COMMANDS_TOO_MUCH. Rather than guess the exact
+  // byte budget, shrink skill descriptions down a ladder and retry until it fits.
+  let usedCap = 256
+  for (const cap of [256, 80, 48, 28, 16]) {
+    usedCap = cap
+    const all = [
+      ...OPS_COMMANDS,
+      ...cmds.map(c => ({ command: c.command, description: c.description.length > cap ? c.description.slice(0, cap - 1) + '…' : c.description })),
+    ]
+    try {
+      await bot.api.setMyCommands(all)
+      break
+    } catch (e) {
+      if (e instanceof GrammyError && /TOO_MUCH/.test(e.description) && cap !== 16) {
+        continue // still too big — shorten further
+      }
+      log(`setMyCommands: ${e}`)
+      break
+    }
+  }
+  const summary = `📋 Команд: ${OPS_COMMANDS.length + cmds.length} (опсы ${OPS_COMMANDS.length} + скиллы ${cmds.length}${dropped ? `, пропущено ${dropped}` : ''}${usedCap < 256 ? `, описания ≤${usedCap}` : ''}).`
+  log(`refreshCommands: ${summary}`)
+  return summary
+}
+
+// /skills menus: token → the project skills a message's buttons run. Callback data is
+// tiny (skrun:<token>:<idx>), so the name list lives here, not in the button payload.
+const skillMenus = new Map<string, { key: string; dir: string; names: string[] }>()
+let skillMenuSeq = 0
+const SKILL_PAGE = 8 // skills per page — one column, so keep it short enough to not scroll
+
+// One-column skill buttons + a ◀ page/pages ▶ nav row (only when >1 page).
+function skillMenuKeyboard(token: string, names: string[], page: number): InlineKeyboard {
+  const pages = Math.max(1, Math.ceil(names.length / SKILL_PAGE))
+  const p = Math.min(Math.max(0, page), pages - 1)
+  const kb = new InlineKeyboard()
+  names.slice(p * SKILL_PAGE, p * SKILL_PAGE + SKILL_PAGE).forEach((name, i) => {
+    kb.text(name, `skrun:${token}:${p * SKILL_PAGE + i}`).row()
+  })
+  if (pages > 1) {
+    if (p > 0) {
+      kb.text('◀', `skpg:${token}:${p - 1}`)
+    }
+    kb.text(`${p + 1}/${pages}`, `skpg:${token}:${p}`) // middle = current page (no-op tap)
+    if (p < pages - 1) {
+      kb.text('▶', `skpg:${token}:${p + 1}`)
+    }
+  }
+  return kb
+}
+
+// Type a slash command into every live pane of a binding, ack, and arm the reply-fallback.
+async function injectSlashToPanes(
+  conns: Socket<undefined>[], cmdText: string, key: string, dir: string,
+  chat_id: string, threadId: number | undefined, msgId: number | undefined,
+): Promise<boolean> {
+  let typed = false
+  for (const conn of conns) {
+    const pane = router.get(conn)?.pane
+    if (!pane) {
+      continue
+    }
+    await typeLine(pane, cmdText).catch(e => log(`inject slash failed: ${e}`))
+    typed = true
+  }
+  if (typed) {
+    if (msgId != null) {
+      void bot.api.setMessageReaction(chat_id, msgId, [{ type: 'emoji', emoji: '👀' }]).catch(() => {})
+    }
+    typing(chat_id, threadId)
+    snapshotScreens(key, cmdText, conns)
+    pendingAnswer.set(key, { dir, at: Date.now() }) // reply-fallback armed
+  }
+  return typed
+}
 
 // Any agent-initiated egress for this session counts as "answered" — drop the pending marker
 // so turnend won't also forward. Called only after the egress send actually succeeded.
@@ -814,7 +957,10 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
   if (msg.action === 'turnend') {
     log(`subagent: turnend keys=${msg.bindingKeys.join(',')}`)
     for (const key of msg.bindingKeys) {
-      turnEnded.set(key, true)
+      turnEndedSub.set(key, true)
+      turnEndedTask.set(key, true)
+      turnEndedTodo.set(key, true)
+      turnEndedSkill.set(key, true)
       await forwardFallbackReply(key) // agent didn't reply → forward its final text ourselves
     }
     return
@@ -829,11 +975,9 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
     let agents = activeSubagents.get(key)
     if (msg.action === 'start') {
       const allDone = !agents || [...agents.values()].every(a => a.done)
-      const fresh = allDone && (turnEnded.get(key) ?? true)
-      // turnEnded is shared across the subagent/task/skill trackers (it just means "a Stop
-      // happened"), so a sibling tracker's own batch-start can leave it false here even
-      // though OUR map was never actually initialized — !agents must force a fresh map
-      // regardless of `fresh`, or the `agents!.set` below throws on undefined.
+      const fresh = allDone && (turnEndedSub.get(key) ?? true)
+      // !agents must force a fresh map even when fresh is false, or the `agents!.set` below
+      // throws on undefined (e.g. first-ever subagent for this key mid-turn).
       if (fresh || !agents) {
         agents = new Map()
         activeSubagents.set(key, agents)
@@ -841,7 +985,7 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
           subagentMessages.delete(key) // previous batch is fully wrapped up — start a fresh one
         }
       }
-      turnEnded.set(key, false) // at least one agent is running again — batch stays open
+      turnEndedSub.set(key, false) // at least one agent is running again — batch stays open
       const description = pendingDescriptions.get(msg.promptId)
       if (description) {
         pendingDescriptions.delete(msg.promptId)
@@ -1035,7 +1179,7 @@ async function handleErrors(pane: string, session: SessionInfo, text: string): P
 }
 
 // Task-list tracking, fed by TaskCreate/TaskUpdate hooks — same self-editing-message and
-// same turn-boundary idea as subagents above (reuses turnEnded), but no promptId dance:
+// same turn-boundary idea as subagents above (own turnEndedTask flag), but no promptId dance:
 // id/subject/status come straight off one PostToolUse event each.
 type TaskStatus = { subject: string; status: string }
 const activeTasks = new Map<string, Map<string, TaskStatus>>() // key -> taskId -> status
@@ -1052,9 +1196,8 @@ async function handleTaskEvent(msg: Extract<StubToHub, { op: 'task' }>): Promise
     let tasks = activeTasks.get(key)
     if (msg.action === 'create') {
       const allDone = !tasks || [...tasks.values()].every(t => t.status === 'completed')
-      const fresh = allDone && (turnEnded.get(key) ?? true)
-      // see the identical comment in handleSubagentEvent — turnEnded is shared across
-      // trackers, so !tasks must force init regardless of `fresh`.
+      const fresh = allDone && (turnEndedTask.get(key) ?? true)
+      // !tasks must force init even when fresh is false (first task for this key mid-turn).
       if (fresh || !tasks) {
         tasks = new Map()
         activeTasks.set(key, tasks)
@@ -1062,7 +1205,7 @@ async function handleTaskEvent(msg: Extract<StubToHub, { op: 'task' }>): Promise
           taskMessages.delete(key)
         }
       }
-      turnEnded.set(key, false)
+      turnEndedTask.set(key, false)
       tasks.set(msg.taskId, { subject: msg.subject, status: 'pending' })
       log(`task: create key=${key} taskId=${msg.taskId} fresh=${fresh} subject="${msg.subject}"`)
     } else {
@@ -1096,7 +1239,7 @@ async function handleTaskEvent(msg: Extract<StubToHub, { op: 'task' }>): Promise
 
 // TodoWrite (the ⊡/✓ checklist tool) — carries the FULL list each call, so no per-item lifecycle:
 // just re-render one self-editing message per turn. Fresh message on a turn boundary (reuses
-// turnEnded), like tasks. Reservation guard (msgId=-1) against a rare back-to-back double-send.
+// own turnEndedTodo flag), like tasks. Reservation guard (msgId=-1) against a rare back-to-back double-send.
 type Todo = { content: string; status: string }
 const todoMessages = new Map<string, { chatId: string; threadId?: number; msgId: number }>()
 
@@ -1108,10 +1251,10 @@ function renderTodoText(todos: Todo[]): string {
 
 async function handleTodoEvent(msg: Extract<StubToHub, { op: 'todo' }>): Promise<void> {
   for (const key of msg.bindingKeys) {
-    if (turnEnded.get(key) ?? true) {
+    if (turnEndedTodo.get(key) ?? true) {
       todoMessages.delete(key) // new turn — start a fresh message at the bottom
     }
-    turnEnded.set(key, false)
+    turnEndedTodo.set(key, false)
     const text = renderTodoText(msg.todos)
     const tracked = todoMessages.get(key)
     if (!tracked) {
@@ -1147,12 +1290,12 @@ function renderSkillText(items: SkillCall[]): string {
 async function handleSkillEvent(msg: Extract<StubToHub, { op: 'skill' }>): Promise<void> {
   for (const key of msg.bindingKeys) {
     let skills = activeSkills.get(key)
-    if (!skills || (turnEnded.get(key) ?? true)) {
+    if (!skills || (turnEndedSkill.get(key) ?? true)) {
       skills = []
       activeSkills.set(key, skills)
       skillMessages.delete(key)
     }
-    turnEnded.set(key, false)
+    turnEndedSkill.set(key, false)
     skills.push({ skill: msg.skill, ...(msg.args ? { args: msg.args } : {}) })
     log(`skill: key=${key} skill=${msg.skill}${msg.args ? ` args="${msg.args}"` : ''}`)
     const text = renderSkillText(skills)
@@ -1196,9 +1339,12 @@ async function pollScreens(): Promise<void> {
     sessions.map(async s => {
       const text = await captureTimeout(s.pane)
       seen.add(s.pane)
-      const busy = s.bindingKeys?.some(k => [...(activeSubagents.get(k)?.values() ?? [])].some(a => !a.done)) ?? false
+      const subagentBusy = s.bindingKeys?.some(k => [...(activeSubagents.get(k)?.values() ?? [])].some(a => !a.done)) ?? false
       const prev = lastPaneText.get(s.pane)
-      if (busy || (prev !== undefined && prev !== text)) {
+      // Fire typing on: a running subagent, a visible working footer (covers static/byte-identical
+      // captures where elapsed hadn't ticked — a pure diff would miss those and the indicator lapses),
+      // or any pane change. paneIsWorking is the robust "agent is busy" signal from the live TUI.
+      if (subagentBusy || paneIsWorking(text) || (prev !== undefined && prev !== text)) {
         const target = pickerChatFor(s)
         if (target) {
           typing(target.chatId, target.threadId)
@@ -1383,16 +1529,12 @@ function safeName(s: string | undefined): string | undefined {
   return s?.replace(/[<>\[\]\r\n;]/g, '_')
 }
 
-// per-binding session lookup, falls back to dir (sessions from before bindingKeys existed)
-function connsForBinding(key: string, dir: string): Socket<undefined>[] {
-  const byKey = router.byBindingKey(key)
-  if (byKey.length > 0) {
-    return byKey
-  }
-  // dir-fallback is only for sessions that predate bindingKeys entirely — a session
-  // that already reports its own bindingKeys must never be pulled in via someone
-  // else's dir match (mode: folder can legitimately put two bindings on one dir).
-  return router.byDir(dir).filter(conn => !router.get(conn)?.bindingKeys?.length)
+// Sessions serving a binding — strictly those that report this binding key. No cwd
+// fallback: a hand-started `claude` in a bound dir (no bindingKeys) is not this topic's
+// session, so an inbound to a topic with no live session revives a proper hub session
+// (handleInbound) instead of hijacking the terminal one. `dir` kept for call-site symmetry.
+function connsForBinding(key: string, _dir: string): Socket<undefined>[] {
+  return router.byBindingKey(key)
 }
 
 async function waitForBinding(key: string, timeoutMs: number): Promise<Socket<undefined>[]> {
@@ -1965,6 +2107,25 @@ async function handleInbound(inbound: Inbound): Promise<void> {
   }
 
   log(`deliver: ${key} → ${binding.dir} (${conns.length} session${conns.length > 1 ? 's' : ''})`)
+
+  // A non-hub slash ("/deep-research …", "/deep_research …") → type it into the session's
+  // pane so Claude Code expands it as a REAL slash command / skill. Ops commands were
+  // consumed above, so anything still starting with "/" is a Claude slash command. Strip
+  // the "@botname" Telegram appends in groups (Claude Code would read "@…" as a file
+  // mention → Enter opens the picker instead of submitting), then map a mangled global
+  // skill (/deep_research) back to its real hyphenated name. Skip when media rides along.
+  if (text.trim().startsWith('/') && !attachment && !downloadImage) {
+    const [head, ...rest] = text.trim().split(/\s+/)
+    const name = head!.slice(1).replace(/@\w+$/, '').toLowerCase() // drop leading "/" and "@bot"
+    const real = globalSkillMap.get(name) ?? name
+    const cmd = ['/' + real, ...rest].join(' ')
+    const ok = await injectSlashToPanes(conns, cmd, key, binding.dir, chat_id, threadId, msgId)
+    if (!ok) {
+      void say('⚠️ Сессия не в tmux — слэш-команду не набрать.')
+    }
+    return
+  }
+
   // 👀 = "received" ack: the reply may lag if the session is busy
   if (msgId != null) {
     void bot.api
@@ -2065,6 +2226,43 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     bot.api.sendMessage(chat_id, html, { ...threadOpt, parse_mode: 'HTML' }).catch(() => {})
   const reg = loadBindings()
   const binding: BindingEntry | undefined = reg[key]
+
+  // /reload — rescan plugins/skills and re-register bot commands (admin, global effect).
+  if (cmd === 'reload') {
+    if (!isAdmin(senderId)) {
+      return
+    }
+    void say('⏳ Пересканирую скиллы…')
+    const summary = await refreshCommands()
+    void say(summary)
+    return
+  }
+
+  // /skills — button menu of THIS project's local skills (per-topic scope Telegram can't
+  // give as native commands). Admin or an allowed user of this binding.
+  if (cmd === 'skills') {
+    if (!binding) {
+      void say('⚠️ Тут нет привязки — сначала <code>/bind</code>.')
+      return
+    }
+    if (!isAdmin(senderId) && !binding.allow?.includes(senderId)) {
+      return
+    }
+    const skills = discoverProjectSkills(binding.dir)
+    if (skills.length === 0) {
+      void say(`📂 Нет проектных скиллов в <code>${escHtml(binding.dir)}/.claude/skills</code>.\n\nГлобальные — набирай как команды, автодополнение по <code>/</code>.`)
+      return
+    }
+    const token = String(++skillMenuSeq)
+    const names = skills.map(s => s.name)
+    skillMenus.set(token, { key, dir: binding.dir, names })
+    void bot.api
+      .sendMessage(chat_id, `📂 <b>Проектные скиллы</b> (${skills.length}) — тапни, чтобы запустить:`, {
+        ...threadOpt, parse_mode: 'HTML', reply_markup: skillMenuKeyboard(token, names, 0),
+      })
+      .catch(() => {})
+    return
+  }
 
   if (cmd === 'bind' || cmd === 'unbind' || cmd === 'allow' || cmd === 'delete') {
     if (!isAdmin(senderId)) {
@@ -2514,6 +2712,49 @@ bot.on('callback_query:data', async ctx => {
     await ctx.answerCallbackQuery({ text: 'Закрыто' }).catch(() => {})
     return
   }
+  // skpg:<token>:<page> — flip the /skills menu to another page (edit keyboard in place).
+  const sp = /^skpg:(\d+):(\d+)$/.exec(ctx.callbackQuery.data)
+  if (sp) {
+    const menu = skillMenus.get(sp[1]!)
+    if (!menu) {
+      await ctx.answerCallbackQuery({ text: 'Меню устарело — вызови /skills снова' }).catch(() => {})
+      return
+    }
+    await ctx.editMessageReplyMarkup({ reply_markup: skillMenuKeyboard(sp[1]!, menu.names, Number(sp[2])) }).catch(() => {})
+    await ctx.answerCallbackQuery().catch(() => {})
+    return
+  }
+  // skrun:<token>:<idx> — run a project skill picked from the /skills menu.
+  const sr = /^skrun:(\d+):(\d+)$/.exec(ctx.callbackQuery.data)
+  if (sr) {
+    const menu = skillMenus.get(sr[1]!)
+    const name = menu?.names[Number(sr[2])]
+    if (!menu || !name) {
+      await ctx.answerCallbackQuery({ text: 'Меню устарело — вызови /skills снова' }).catch(() => {})
+      return
+    }
+    const senderId = String(ctx.from.id)
+    const binding = loadBindings()[menu.key]
+    if (!binding || (!isAdmin(senderId) && !binding.allow?.includes(senderId))) {
+      await ctx.answerCallbackQuery({ text: 'Нет доступа' }).catch(() => {})
+      return
+    }
+    const conns = connsForBinding(menu.key, menu.dir)
+    if (conns.length === 0) {
+      await ctx.answerCallbackQuery({ text: 'Нет живой сессии — /resume' }).catch(() => {})
+      return
+    }
+    const msg = ctx.callbackQuery.message
+    const ok = await injectSlashToPanes(
+      conns, `/${name}`, menu.key, menu.dir, String(ctx.chat?.id ?? ''),
+      msg?.message_thread_id, undefined,
+    )
+    await ctx.answerCallbackQuery({ text: ok ? `▶ /${name}` : 'Сессия не в tmux' }).catch(() => {})
+    if (ok && msg) {
+      await ctx.editMessageText(`▶️ <b>/${escHtml(name)}</b> — запущено.`, { parse_mode: 'HTML' }).catch(() => {})
+    }
+    return
+  }
   const tm = /^topicmode:(.+):(folder|worktree)$/.exec(ctx.callbackQuery.data)
   if (tm) {
     const [, key, modeStr] = tm
@@ -2739,23 +2980,7 @@ void (async () => {
           // scoped-списки (например, от старого бота) перекрывают default в DM/группах — чистим
           void bot.api.deleteMyCommands({ scope: { type: 'all_private_chats' } }).catch(e => log(`deleteMyCommands: ${e}`))
           void bot.api.deleteMyCommands({ scope: { type: 'all_group_chats' } }).catch(e => log(`deleteMyCommands: ${e}`))
-          void bot.api.setMyCommands([
-            { command: 'status', description: 'Статус сессии (папка/tmux/claude/лимиты)' },
-            { command: 'resume', description: 'Поднять сессию (с выбором, какую)' },
-            { command: 'screen', description: 'Показать экран сессии как есть' },
-            { command: 'new', description: 'Запустить свежую сессию' },
-            { command: 'compact', description: 'Отправить /compact в сессию' },
-            { command: 'clear', description: 'Очистить историю сессии' },
-            { command: 'esc', description: 'Прервать текущий ход' },
-            { command: 'enter', description: 'Отправить Enter (сабмитнуть строку ввода)' },
-            { command: 'model', description: 'Выбрать модель (интерактивно, кнопками)' },
-            { command: 'stop', description: 'Остановить сессию (graceful /exit → Ctrl-C)' },
-            { command: 'restart', description: 'Аккуратный перезапуск сессии' },
-            { command: 'bind', description: 'Привязать этот чат/топик к папке проекта (админ)' },
-            { command: 'unbind', description: 'Снять привязку (админ)' },
-            { command: 'delete', description: 'Снять привязку + удалить топик (админ)' },
-            { command: 'allow', description: 'Дать доступ пользователю к этому биндингу (админ)' },
-          ]).catch(e => log(`setMyCommands: ${e}`))
+          void refreshCommands() // ops + global-skill commands; async plugin scan, don't block polling
         },
       })
       return
