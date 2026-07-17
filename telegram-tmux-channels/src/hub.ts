@@ -23,7 +23,7 @@ import { Router } from './router'
 import { chunk, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES, PHOTO_EXTS } from './chunk'
 import { mdToHtml } from './md-html'
 import {
-  parseOpsCommand, parseCompaction, parseContextPct, parseError, parseWorkflow, paneIsWorking, sendKeys, typeLine, selectOption, restartSession, stopSession, alive,
+  parseOpsCommand, parseCompaction, parseContextPct, parseError, parseWorkflow, paneIsWorking, sendKeys, typeLine, typeSlashCommand, selectOption, restartSession, stopSession, alive,
   hasTmuxSession, ensureTmuxSession, killTmuxSession, buildLaunch, shellQuote, ackStartupPrompts,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
@@ -919,7 +919,7 @@ async function injectSlashToPanes(
     if (!pane) {
       continue
     }
-    await typeLine(pane, cmdText).catch(e => log(`inject slash failed: ${e}`))
+    await typeSlashCommand(pane, cmdText).catch(e => log(`inject slash failed: ${e}`))
     typed = true
   }
   if (typed) {
@@ -2379,8 +2379,16 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
           await sendKeys(s.pane, '/clear', 'Enter')
           void say('🧹 <b>История очищена.</b>')
         } else if (cmd === 'esc') {
-          await sendKeys(s.pane, 'Escape')
-          void say('⎋ <b>Esc</b> отправлен.')
+          // Interrupt the current turn AND drain the input queue. After an interrupt Claude Code
+          // immediately starts the NEXT queued message, so a lone Escape looks like it "did
+          // nothing" when a queue is feeding (the prod runaway couldn't be stopped this way).
+          // Escape a few times to drain a short queue, then Ctrl-U to clear the input line.
+          for (let i = 0; i < 3; i++) {
+            await sendKeys(s.pane, 'Escape')
+            await new Promise(r => setTimeout(r, 250))
+          }
+          await sendKeys(s.pane, 'C-u')
+          void say('⎋ <b>Esc</b> отправлен (+ очередь ввода очищена).')
         } else if (cmd === 'enter') {
           // Сабмитнуть то, что уже в строке ввода pane (напр. /compact, который
           // набрался, но не отправился) — голый Enter, без набора текста.

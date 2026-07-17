@@ -228,6 +228,20 @@ export async function typeLine(pane: string, text: string): Promise<void> {
   await tmux('send-keys', '-t', pane, 'Enter')
 }
 
+// Inject a SLASH command literally. Claude Code's "/" autocomplete pops a fuzzy-matched
+// suggestion and Enter selects the HIGHLIGHTED one, not the typed text — so typing "/implement"
+// could actually run a similar-looking skill (seen live: "/oh" ran "/claude-api"; a real prod
+// "/implement" fired "/claude-mem:oh-my-issues"). Escape closes the popup while KEEPING the typed
+// text (verified), so the following Enter submits the literal command. Never do this for plain
+// text — Escape there interrupts a running turn / clears the line.
+export async function typeSlashCommand(pane: string, text: string): Promise<void> {
+  await tmux('send-keys', '-t', pane, '-l', text)
+  await sleep(TYPE_ENTER_GAP_MS)
+  await tmux('send-keys', '-t', pane, 'Escape') // dismiss the "/" autocomplete popup, keep the text
+  await sleep(150)
+  await tmux('send-keys', '-t', pane, 'Enter')
+}
+
 // A picker's numbered options are footer'd "Enter to select · ↑/↓ to navigate" — the
 // digit alone only moves the cursor, same as an arrow key; Enter confirms. Sending
 // just the digit leaves the picker sitting open (observed 2026-07-15: AskUserQuestion
