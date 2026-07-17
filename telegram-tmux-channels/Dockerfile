@@ -33,4 +33,9 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # The hub code is bind-mounted at run time (so host edits are testable live) — see
 # docker-compose.yml. Auth + per-session state live in the persistent home volume.
+USER root
+COPY --chmod=0755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+USER user
+# entrypoint seeds onboarding/hooks/stub-MCP on every start so hub-spawned sessions run clean
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["sleep", "infinity"]
