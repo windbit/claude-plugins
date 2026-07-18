@@ -9,30 +9,48 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs'
 import { STATE_DIR } from './paths'
 import { join } from 'path'
-
-const STATE_FILE = join(STATE_DIR, 'hub-state.json')
-const TMP_FILE = `${STATE_FILE}.tmp`
+import type { Picker } from './picker'
 
 type PendingAnswer = { dir: string; at: number }
+// A permission request awaiting an allow/deny tap. The live socket is NOT stored (it dies with a
+// restart) — only `key` (the binding), so on reboot we re-resolve a fresh conn for that session.
+export type PersistedPermission = { tool_name: string; description: string; input_preview: string; key: string; at: number }
+// An open TUI picker mirrored to Telegram buttons. Keyed by tmux pane. `key` (the binding) lets us
+// reject a tap if the pane got recycled to a different session before the poll loop reconciled.
+export type PersistedPicker = {
+  chatId: string; threadId?: number; msgId: number; hash: string; token: string; picker: Picker; key: string; at: number
+}
 export type HubState = {
   version: 1
   pendingAnswer: Record<string, PendingAnswer>
   lastFallback: Record<string, string>
+  permissions: Record<string, PersistedPermission>
+  pickers: Record<string, PersistedPicker>
 }
 
-const empty = (): HubState => ({ version: 1, pendingAnswer: {}, lastFallback: {} })
+const empty = (): HubState => ({ version: 1, pendingAnswer: {}, lastFallback: {}, permissions: {}, pickers: {} })
 
 export class HubStateRepository {
   private state: HubState = empty()
   private timer: ReturnType<typeof setTimeout> | null = null
   private log: (s: string) => void
+  private dir: string
+  private file: string
+  private tmp: string
 
-  constructor(log: (s: string) => void = () => {}) {
+  constructor(log: (s: string) => void = () => {}, dir: string = STATE_DIR) {
     this.log = log
+    this.dir = dir
+    this.file = join(dir, 'hub-state.json')
+    this.tmp = `${this.file}.tmp`
     try {
-      const raw = JSON.parse(readFileSync(STATE_FILE, 'utf8')) as Partial<HubState>
+      const raw = JSON.parse(readFileSync(this.file, 'utf8')) as Partial<HubState>
       if (raw && raw.version === 1) {
-        this.state = { ...empty(), ...raw, pendingAnswer: raw.pendingAnswer ?? {}, lastFallback: raw.lastFallback ?? {} }
+        this.state = {
+          ...empty(), ...raw,
+          pendingAnswer: raw.pendingAnswer ?? {}, lastFallback: raw.lastFallback ?? {},
+          permissions: raw.permissions ?? {}, pickers: raw.pickers ?? {},
+        }
       }
     } catch {} // no file / corrupt → start empty
   }
@@ -45,6 +63,14 @@ export class HubStateRepository {
   delPending(key: string): void { delete this.state.pendingAnswer[key]; this.schedule() }
   setFallback(key: string, text: string): void { this.state.lastFallback[key] = text; this.schedule() }
 
+  permissionEntries(): [string, PersistedPermission][] { return Object.entries(this.state.permissions) }
+  setPermission(id: string, v: PersistedPermission): void { this.state.permissions[id] = v; this.schedule() }
+  delPermission(id: string): void { delete this.state.permissions[id]; this.schedule() }
+
+  pickerEntries(): [string, PersistedPicker][] { return Object.entries(this.state.pickers) }
+  setPicker(pane: string, v: PersistedPicker): void { this.state.pickers[pane] = v; this.schedule() }
+  delPicker(pane: string): void { delete this.state.pickers[pane]; this.schedule() }
+
   private schedule(): void {
     if (this.timer) return
     this.timer = setTimeout(() => { this.timer = null; this.flush() }, 300)
@@ -54,9 +80,9 @@ export class HubStateRepository {
   flush(): void {
     if (this.timer) { clearTimeout(this.timer); this.timer = null }
     try {
-      mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
-      writeFileSync(TMP_FILE, JSON.stringify(this.state), { mode: 0o600 })
-      renameSync(TMP_FILE, STATE_FILE)
+      mkdirSync(this.dir, { recursive: true, mode: 0o700 })
+      writeFileSync(this.tmp, JSON.stringify(this.state), { mode: 0o600 })
+      renameSync(this.tmp, this.file)
     } catch (e) {
       this.log(`hub-state flush failed: ${e}`)
     }

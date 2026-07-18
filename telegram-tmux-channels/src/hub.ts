@@ -40,7 +40,7 @@ import {
 } from './trusted-groups'
 import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree } from './dir-resolve'
 import { jsonlMtimes, captureNewSessionId, recentSessions, lastAssistantText, newestJsonlSize } from './session-id'
-import { HubStateRepository } from './state-repo'
+import { HubStateRepository, type PersistedPicker, type PersistedPermission } from './state-repo'
 import { recordChat, chatLabel } from './known-chats'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
@@ -199,7 +199,8 @@ function send(sock: Socket<undefined>, msg: HubToStub): void {
 }
 
 type PendingPermission = {
-  conn: Socket<undefined>
+  conn?: Socket<undefined> // absent after a restart — resolvePermission re-finds a live conn via `key`
+  key: string // binding key of the requesting session
   tool_name: string
   description: string
   input_preview: string
@@ -212,8 +213,13 @@ function resolvePermission(request_id: string, behavior: 'allow' | 'deny'): bool
   if (!p) {
     return false
   }
-  pendingPermissions.delete(request_id)
-  send(p.conn, { op: 'event', kind: 'permission', request_id, behavior })
+  // Prefer a currently-live conn for the binding; a persisted p.conn is stale after a restart.
+  const conn = (p.key && router.byBindingKey(p.key)[0]) || p.conn
+  disarmPermission(request_id)
+  if (!conn) {
+    return false // session gone — nothing to notify
+  }
+  send(conn, { op: 'event', kind: 'permission', request_id, behavior })
   return true
 }
 
@@ -479,7 +485,8 @@ async function synthesizeSpeech(text: string): Promise<Buffer | undefined> {
 
 function doPermissionRequest(conn: Socket<undefined>, params: Record<string, unknown>): string {
   const { request_id, tool_name, description, input_preview } = params as Record<string, string>
-  pendingPermissions.set(request_id, { conn, tool_name, description, input_preview })
+  const key = router.get(conn)?.bindingKeys?.[0] ?? ''
+  armPermission(request_id, { conn, key, tool_name, description, input_preview })
   const keyboard = new InlineKeyboard()
     .text('Подробнее', `perm:more:${request_id}`)
     .text('✅ Разрешить', `perm:allow:${request_id}`)
@@ -558,9 +565,14 @@ Bun.listen<undefined>({
       const s = router.get(sock)
       router.unsubscribe(sock)
       feeders.delete(sock)
-      for (const [id, p] of pendingPermissions) {
-        if (p.conn === sock) {
-          pendingPermissions.delete(id)
+      // Drop this conn's pending permissions in-memory only (leave the persisted copy — a genuine
+      // restart flushes first, and a stale entry ages out on boot). Skip during shutdown so the
+      // flushed snapshot isn't clobbered by a debounced re-write.
+      if (!shuttingDown) {
+        for (const [id, p] of pendingPermissions) {
+          if (p.conn === sock) {
+            pendingPermissions.delete(id)
+          }
         }
       }
       log(`stub disconnected (${router.size()} left)`)
@@ -584,6 +596,7 @@ type ActivePicker = {
   hash: string
   token: string
   picker: Picker
+  key: string // binding key — reject a tap if the pane got recycled to another session post-restart
 }
 const activePickers = new Map<string, ActivePicker>() // key = pane
 const awaitingCustom = new Map<string, { chatId: string; threadId?: number; at: number }>()
@@ -670,19 +683,42 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
     if (existing) {
       // closed without a TG tap (answered in the TUI) — the answer is unknown to us
       void resolvePickerMessage(existing, '<i>отвечено в терминале</i>')
-      activePickers.delete(pane)
+      disarmPicker(pane)
     }
     return
   }
   if (existing && existing.hash === picker.hash) {
+    // Already tracked (incl. a picker recovered from disk after a restart) — no duplicate send.
     return
   }
   const target = pickerChatFor(session)
   if (!target) {
     return
   }
+  const key = session.bindingKeys?.[0] ?? ''
+  // Restart recovery: if disk staged a picker for this pane, adopt its Telegram message instead of
+  // sending a duplicate — but only when the SAME pane still shows the SAME picker under the SAME
+  // binding (a recycled pane / moved-on session fails this and the stale bubble is closed instead).
+  const rec = recoveredPickers.get(pane)
+  if (rec) {
+    recoveredPickers.delete(pane)
+    if (rec.hash === picker.hash && rec.key === key) {
+      armPicker(pane, {
+        chatId: rec.chatId,
+        ...(rec.threadId != null ? { threadId: rec.threadId } : {}),
+        msgId: rec.msgId, hash: picker.hash, token: picker.hash, picker, key,
+      })
+      log(`picker recovered: pane=${pane} msg=${rec.msgId}`)
+      return
+    }
+    stateRepo.delPicker(pane)
+    void bot.api
+      .editMessageText(rec.chatId, rec.msgId, `❓ <i>Пикер закрыт (рестарт)</i>`, { parse_mode: 'HTML' })
+      .catch(() => {})
+  }
   // Reserve the slot synchronously before the await below — otherwise an overlapping
   // pollScreens tick for the same pane sees `existing === undefined` too and double-sends.
+  // In-memory only (msgId:-1 is a transient placeholder — nothing worth persisting yet).
   activePickers.set(pane, {
     chatId: target.chatId,
     ...(target.threadId != null ? { threadId: target.threadId } : {}),
@@ -690,6 +726,7 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
     hash: picker.hash,
     token: picker.hash,
     picker,
+    key,
   })
   const sent = await bot.api
     .sendMessage(target.chatId, `❓ <b>${escHtml(picker.title || 'Question')}</b>`, {
@@ -700,16 +737,17 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
     .catch(() => undefined)
   if (sent) {
     log(`picker sent: pane=${pane} mode=${picker.mode} opts=${picker.options.length} title="${picker.title.slice(0, 40)}"`)
-    activePickers.set(pane, {
+    armPicker(pane, {
       chatId: target.chatId,
       ...(target.threadId != null ? { threadId: target.threadId } : {}),
       msgId: sent.message_id,
       hash: picker.hash,
       token: picker.hash,
       picker,
+      key,
     })
   } else if (activePickers.get(pane)?.msgId === -1) {
-    activePickers.delete(pane) // send failed — don't leave a permanently-unresolvable placeholder
+    disarmPicker(pane) // send failed — don't leave a permanently-unresolvable placeholder
   }
 }
 
@@ -803,6 +841,55 @@ function armPending(key: string, v: { dir: string; at: number }): void { pending
 function disarmPending(key: string): void { pendingAnswer.delete(key); stateRepo.delPending(key) }
 function recordFallback(key: string, text: string): void { lastFallback.set(key, text); stateRepo.setFallback(key, text) }
 const FALLBACK_MAX_CHARS = 3500 // cap the safety-net forward; a huge answer gets truncated, not spammed
+
+// ── restart-survivable interactive state (Stage 3) ──────────────────────────
+// Permissions and pickers also outlive a hub restart. A permission re-resolves against a fresh
+// conn for its binding; a picker is re-adopted only if the same pane still shows the same picker
+// (recoveredPickers stages disk entries until the poll loop confirms them — see detectPicker),
+// so a recycled pane can never resolve someone else's prompt.
+const RECOVER_MAX_AGE_MS = 60 * 60 * 1000 // ignore anything older than an hour on boot (stale)
+const RECOVER_GRACE_MS = 90 * 1000 // give revived sessions this long to re-show a recovered picker
+
+function armPermission(id: string, p: PendingPermission): void {
+  pendingPermissions.set(id, p)
+  stateRepo.setPermission(id, { tool_name: p.tool_name, description: p.description, input_preview: p.input_preview, key: p.key, at: Date.now() })
+}
+function disarmPermission(id: string): void { pendingPermissions.delete(id); stateRepo.delPermission(id) }
+function armPicker(pane: string, ap: ActivePicker): void {
+  activePickers.set(pane, ap)
+  stateRepo.setPicker(pane, { ...ap, at: Date.now() })
+}
+function disarmPicker(pane: string): void { activePickers.delete(pane); stateRepo.delPicker(pane) }
+
+// pane -> a persisted picker awaiting confirmation that its session/pane still shows it
+const recoveredPickers = new Map<string, PersistedPicker>()
+for (const [id, v] of stateRepo.permissionEntries()) {
+  if (Date.now() - v.at > RECOVER_MAX_AGE_MS) { stateRepo.delPermission(id); continue }
+  pendingPermissions.set(id, { key: v.key, tool_name: v.tool_name, description: v.description, input_preview: v.input_preview })
+}
+for (const [pane, v] of stateRepo.pickerEntries()) {
+  if (Date.now() - v.at > RECOVER_MAX_AGE_MS) { stateRepo.delPicker(pane); continue }
+  recoveredPickers.set(pane, v)
+}
+// A recovered picker whose session never came back (or moved on) after the grace: close its
+// Telegram message and forget it, so a dead button doesn't linger.
+if (recoveredPickers.size > 0) {
+  setTimeout(() => {
+    for (const [pane, v] of recoveredPickers) {
+      recoveredPickers.delete(pane)
+      stateRepo.delPicker(pane)
+      void bot.api
+        .editMessageText(v.chatId, v.msgId, `❓ <i>Пикер закрыт (сессия не восстановилась)</i>`, { parse_mode: 'HTML' })
+        .catch(() => {})
+    }
+  }, RECOVER_GRACE_MS)
+}
+
+// The live session on `pane` really belongs to binding `key` (guards against a recycled pane id).
+function paneBelongsToKey(pane: string, key: string): boolean {
+  if (!key) return true // legacy picker without a stored key — nothing to check against
+  return router.all().some(c => { const s = router.get(c); return s?.pane === pane && !!s.bindingKeys?.includes(key) })
+}
 
 // ── skill slash-commands ──
 // GLOBAL skills (user + enabled plugins) become bot commands so every chat gets native
@@ -1321,7 +1408,7 @@ async function pollScreens(): Promise<void> {
       return { s, text }
     }),
   )
-  for (const pane of [...activePickers.keys()]) if (!seen.has(pane)) activePickers.delete(pane)
+  for (const pane of [...activePickers.keys()]) if (!seen.has(pane)) disarmPicker(pane)
   for (const pane of [...lastPaneText.keys()]) if (!seen.has(pane)) lastPaneText.delete(pane)
   for (const pane of [...compactMessages.keys()]) if (!seen.has(pane)) compactMessages.delete(pane)
   for (const pane of [...lastError.keys()]) if (!seen.has(pane)) lastError.delete(pane)
@@ -1356,6 +1443,13 @@ async function handlePickCallback(
     await ctx.answerCallbackQuery({ text: 'Пикер закрыт' }).catch(() => {})
     return
   }
+  // Post-restart safety: never send keys to a pane that has been recycled to a different session
+  // than the one this picker belongs to (would answer the wrong agent).
+  if (!paneBelongsToKey(pane, ap.key)) {
+    disarmPicker(pane)
+    await ctx.answerCallbackQuery({ text: 'Пикер закрыт' }).catch(() => {})
+    return
+  }
   const senderId = String(ctx.from!.id)
   if (!isAdmin(senderId) && !bindingAllows(ap.chatId, senderId)) {
     await ctx.answerCallbackQuery({ text: 'Нет доступа' }).catch(() => {})
@@ -1373,7 +1467,7 @@ async function handlePickCallback(
   if (action.kind === 'opt' && ap.picker.mode === 'single') {
     await selectOption(pane, action.index)
     await resolvePickerMessage(ap, `✅ <b>${escHtml(labelOf(action.index))}</b>`)
-    activePickers.delete(pane)
+    disarmPicker(pane)
     typing(ap.chatId, ap.threadId) // agent resumes on the answer
     await ctx.answerCallbackQuery({ text: 'Выбрано' }).catch(() => {})
   } else if (action.kind === 'opt') {
@@ -1388,7 +1482,7 @@ async function handlePickCallback(
     await sendKeys(pane, 'Right') // → review screen
     await selectOption(pane, 1) // Submit answers
     await resolvePickerMessage(ap, `✅ <b>${chosen.length ? escHtml(chosen.join(', ')) : '—'}</b>`)
-    activePickers.delete(pane)
+    disarmPicker(pane)
     typing(ap.chatId, ap.threadId) // agent resumes on the submitted answers
     await ctx.answerCallbackQuery({ text: 'Отправлено' }).catch(() => {})
   } else {
@@ -2011,7 +2105,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
       const ap = activePickers.get(pane)
       if (ap) {
         await resolvePickerMessage(ap, `✅ <b>${escHtml(text)}</b>`)
-        activePickers.delete(pane)
+        disarmPicker(pane)
       }
       awaitingCustom.delete(pane)
       return
