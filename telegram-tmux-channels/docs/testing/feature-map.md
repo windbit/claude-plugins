@@ -18,7 +18,7 @@
 | 11 | `voice` | STT входящих, TTS `reply(voice:true)` | STT/TTS в `hub.ts`/`stub.ts` | ⬜ |
 | 12 | `skills` | глобальные скиллы как команды бота, меню `/skills` (пагинация), инъекция слэша (фаззи-фикс) | `skills.ts`, `typeSlashCommand`, `injectSlashToPanes` | ⬜ |
 | 13 | `reply-fallback` | добор ответа из транскрипта на turnend, если агент не отправил | `forwardFallbackReply`, `session-id.ts` | ⬜ |
-| 14 | `restart-persistence` | Stage 1 посты / Stage 2 fallback / Stage 3 пермишены+пикеры через рестарт | `state-repo.ts`, hydrate в `hub.ts` | 🟡 |
+| 14 | `restart-persistence` | Stage 1 посты / Stage 2 fallback / Stage 3 пермишены+пикеры через рестарт | `state-repo.ts`, hydrate в `hub.ts` | 🟡 (RP3 пикеры ✅ end-to-end, RP1 fallback-маркер ✅; RP5 пермишены — нужна non-bypass сессия) |
 | 15 | `context-badge` | `⚠️ Контекст NN%` перед ответом при пороге | `parseContextPct`, `TELEGRAM_CONTEXT_WARN_PCT` | ⬜ |
 | 16 | `pane-detectors` | детект компакции/воркфлоу/ошибок в `pollScreens` | `handleCompaction`/`handleWorkflow`/`handleErrors` | ⬜ |
 | 17 | `debug-log` | `screenlog.jsonl` — таймлайн, кольцо 1000, финальный текст | `logDebugEvent` | ⬜ |
