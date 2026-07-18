@@ -1649,7 +1649,7 @@ async function renderScreenPng(pane: string): Promise<Uint8Array | undefined> {
   const cols = Math.max(...lines.map(l => l.replace(/\x1b\[[^m]*m/g, '').length), 80)
   const width = Math.min(24 + Math.ceil(cols * 8.5), 2400)
   const height = 24 + 19 * (lines.length + 1)
-  const base = join(STATE_DIR, `screen-${pane.replace(/\W/g, '')}-${Date.now()}`)
+  const base = join(STATE_DIR, `screen-${pane.replace(/\W/g, '')}-${++screenSeq}`)
   writeFileSync(`${base}.html`, ansiToHtml(ansi))
   try {
     const proc = Bun.spawn(
@@ -1697,6 +1697,17 @@ function closeLiveScreen(token: string): LiveScreen | undefined {
     liveScreens.delete(token)
   }
   return v
+}
+
+// One live view per pane: a new /screen or /last closes+deletes any prior view of the same pane.
+// Several views on one pane meant N refresh loops racing (and same-pane chrome renders colliding
+// on the temp filename) — glitchy. Called before starting a new view.
+async function closeLiveScreensForPane(pane: string): Promise<void> {
+  for (const [token, v] of [...liveScreens]) {
+    if (v.pane !== pane) continue
+    closeLiveScreen(token)
+    await bot.api.deleteMessage(v.chatId, v.msgId).catch(() => {})
+  }
 }
 
 // auto-stop refreshing but KEEP the entry + message + Close button (so it can still be dismissed)
@@ -1757,6 +1768,7 @@ async function refreshLiveScreen(token: string): Promise<void> {
 }
 
 async function startLiveScreen(chatId: string, threadId: number | undefined, pane: string, kind: 'png' | 'text' = 'png'): Promise<void> {
+  await closeLiveScreensForPane(pane) // one live view per pane — new one replaces any prior
   const token = String(++screenSeq)
   const kb = closeKb(token)
   const threadOpt = threadId != null ? { message_thread_id: threadId } : {}
