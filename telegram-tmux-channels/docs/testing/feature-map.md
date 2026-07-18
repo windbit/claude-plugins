@@ -11,7 +11,7 @@
 | 4 | `death-notice` | 💀 при пропаже tmux/процесса без `/restart`, грейс | `notifyUnexpectedDeath` | ⬜ |
 | 5 | `core-messaging` | входящее→сессия (только reply, не транскрипт), `reply`/`react`/`edit_message`, очередь при спавне | `handleInbound`, `enqueueForTopic`/`flushQueued` | ⬜ |
 | 6 | `picker-bridge` | `AskUserQuestion`/`/model`→кнопки, single/multi/custom, тап→кейстроки, авто-ack trust-промптов | `detectPicker`, `picker.ts`, `handlePickCallback` | ⬜ |
-| 7 | `permissions` | кнопки allow/deny/подробнее, текст `y/n <token>` | `doPermissionRequest`, `resolvePermission` | 🔴 (двойной путь: канальный 🔐 шлётся в ЛС и невидим без /start; реально работает picker Yes/No в топике — нужно решение) |
+| 7 | `permissions` | разрешение тула → picker Yes/No в топике (канальный 🔐-путь убран) | picker-мост (`detectPicker`) | 🟢 (канальный путь удалён 0a9619c; picker — единственный UX, проверено e2e) |
 | 8 | `status-posts` | самообновляемые посты: агенты/тудушки/скиллы (PerTurnEditablePost) | `PerTurnEditablePost`, `subagent-hook.ts` | ⬜ |
 | 9 | `ops-commands` | `/compact` `/clear` `/esc`(дренаж очереди) `/enter` `/status` `/model` | ops-диспатч в `hub.ts`, `parseOpsCommand` | ⬜ |
 | 10 | `live-views` | `/screen`(PNG) `/last`(текст), one-per-pane, Закрыть, авто-стоп, 5с | `startLiveScreen`, `paneDigest`, `renderScreenPng` | 🟢 (P1/P3/P4/N1/N2/N3 ✅; остаётся P2 chrome, N4 рестарт-шов) |
