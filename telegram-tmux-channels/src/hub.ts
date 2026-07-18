@@ -40,7 +40,7 @@ import {
 } from './trusted-groups'
 import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree } from './dir-resolve'
 import { jsonlMtimes, captureNewSessionId, recentSessions, lastAssistantText, newestJsonlSize } from './session-id'
-import { HubStateRepository, type PersistedPicker, type PersistedPermission } from './state-repo'
+import { HubStateRepository, type PersistedPicker } from './state-repo'
 import { recordChat, chatLabel } from './known-chats'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
@@ -198,31 +198,6 @@ function send(sock: Socket<undefined>, msg: HubToStub): void {
   }
 }
 
-type PendingPermission = {
-  conn?: Socket<undefined> // absent after a restart — resolvePermission re-finds a live conn via `key`
-  key: string // binding key of the requesting session
-  tool_name: string
-  description: string
-  input_preview: string
-}
-const pendingPermissions = new Map<string, PendingPermission>()
-const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
-
-function resolvePermission(request_id: string, behavior: 'allow' | 'deny'): boolean {
-  const p = pendingPermissions.get(request_id)
-  if (!p) {
-    return false
-  }
-  // Prefer a currently-live conn for the binding; a persisted p.conn is stale after a restart.
-  const conn = (p.key && router.byBindingKey(p.key)[0]) || p.conn
-  disarmPermission(request_id)
-  if (!conn) {
-    return false // session gone — nothing to notify
-  }
-  send(conn, { op: 'event', kind: 'permission', request_id, behavior })
-  return true
-}
-
 // a session's outbound is limited to the chats of its own keys
 function ownKeys(conn: Socket<undefined>): string[] {
   const s = router.get(conn)
@@ -269,7 +244,10 @@ async function handleRpc(
     case 'download_attachment':
       return doDownload(params)
     case 'permission_request':
-      return doPermissionRequest(conn, params)
+      // Permissions are surfaced in-topic by the picker bridge (it scrapes the TUI
+      // "Do you want to proceed?" dialog). The old channel path DM'd admins a separate
+      // 🔐 prompt that silently failed without an open DM — dropped. No-op: rely on the picker.
+      return 'ignored'
     default:
       throw new Error(`unknown rpc method: ${method}`)
   }
@@ -483,25 +461,6 @@ async function synthesizeSpeech(text: string): Promise<Buffer | undefined> {
   }
 }
 
-function doPermissionRequest(conn: Socket<undefined>, params: Record<string, unknown>): string {
-  const { request_id, tool_name, description, input_preview } = params as Record<string, string>
-  const key = router.get(conn)?.bindingKeys?.[0] ?? ''
-  armPermission(request_id, { conn, key, tool_name, description, input_preview })
-  const keyboard = new InlineKeyboard()
-    .text('Подробнее', `perm:more:${request_id}`)
-    .text('✅ Разрешить', `perm:allow:${request_id}`)
-    .text('❌ Отклонить', `perm:deny:${request_id}`)
-  for (const chat_id of ADMINS) {
-    void bot.api
-      .sendMessage(chat_id, `🔐 <b>Запрос разрешения</b>\n\n<code>${escHtml(tool_name)}</code>`, {
-        parse_mode: 'HTML',
-        reply_markup: keyboard,
-      })
-      .catch(e => log(`permission_request send to ${chat_id} failed: ${e}`))
-  }
-  return 'relayed'
-}
-
 // reply must never be able to send channel state (token, bindings.json)
 function assertSendable(f: string): void {
   let real: string, stateReal: string
@@ -565,16 +524,6 @@ Bun.listen<undefined>({
       const s = router.get(sock)
       router.unsubscribe(sock)
       feeders.delete(sock)
-      // Drop this conn's pending permissions in-memory only (leave the persisted copy — a genuine
-      // restart flushes first, and a stale entry ages out on boot). Skip during shutdown so the
-      // flushed snapshot isn't clobbered by a debounced re-write.
-      if (!shuttingDown) {
-        for (const [id, p] of pendingPermissions) {
-          if (p.conn === sock) {
-            pendingPermissions.delete(id)
-          }
-        }
-      }
       log(`stub disconnected (${router.size()} left)`)
       if (s) {
         void notifyUnexpectedDeath(s)
@@ -843,18 +792,12 @@ function recordFallback(key: string, text: string): void { lastFallback.set(key,
 const FALLBACK_MAX_CHARS = 3500 // cap the safety-net forward; a huge answer gets truncated, not spammed
 
 // ── restart-survivable interactive state (Stage 3) ──────────────────────────
-// Permissions and pickers also outlive a hub restart. A permission re-resolves against a fresh
-// conn for its binding; a picker is re-adopted only if the same pane still shows the same picker
-// (recoveredPickers stages disk entries until the poll loop confirms them — see detectPicker),
+// An open picker outlives a hub restart: it is re-adopted only if the same pane still shows the same
+// picker (recoveredPickers stages disk entries until the poll loop confirms them — see detectPicker),
 // so a recycled pane can never resolve someone else's prompt.
 const RECOVER_MAX_AGE_MS = 60 * 60 * 1000 // ignore anything older than an hour on boot (stale)
 const RECOVER_GRACE_MS = 90 * 1000 // give revived sessions this long to re-show a recovered picker
 
-function armPermission(id: string, p: PendingPermission): void {
-  pendingPermissions.set(id, p)
-  stateRepo.setPermission(id, { tool_name: p.tool_name, description: p.description, input_preview: p.input_preview, key: p.key, at: Date.now() })
-}
-function disarmPermission(id: string): void { pendingPermissions.delete(id); stateRepo.delPermission(id) }
 function armPicker(pane: string, ap: ActivePicker): void {
   activePickers.set(pane, ap)
   stateRepo.setPicker(pane, { ...ap, at: Date.now() })
@@ -863,10 +806,6 @@ function disarmPicker(pane: string): void { activePickers.delete(pane); stateRep
 
 // pane -> a persisted picker awaiting confirmation that its session/pane still shows it
 const recoveredPickers = new Map<string, PersistedPicker>()
-for (const [id, v] of stateRepo.permissionEntries()) {
-  if (Date.now() - v.at > RECOVER_MAX_AGE_MS) { stateRepo.delPermission(id); continue }
-  pendingPermissions.set(id, { key: v.key, tool_name: v.tool_name, description: v.description, input_preview: v.input_preview })
-}
 for (const [pane, v] of stateRepo.pickerEntries()) {
   if (Date.now() - v.at > RECOVER_MAX_AGE_MS) { stateRepo.delPicker(pane); continue }
   recoveredPickers.set(pane, v)
@@ -2152,22 +2091,6 @@ async function handleInbound(inbound: Inbound): Promise<void> {
     }
   }
 
-  // a text permission reply ("yes xxxxx") isn't routed — it goes to the request_id owner
-  const permMatch = PERMISSION_REPLY_RE.exec(text)
-  if (permMatch && isAdmin(senderId)) {
-    const ok = resolvePermission(
-      permMatch[2]!.toLowerCase(),
-      permMatch[1]!.toLowerCase().startsWith('y') ? 'allow' : 'deny',
-    )
-    if (msgId != null) {
-      const emoji = !ok ? '🤷‍♂️' : permMatch[1]!.toLowerCase().startsWith('y') ? '✅' : '❌'
-      void bot.api
-        .setMessageReaction(chat_id, msgId, [{ type: 'emoji', emoji: emoji as ReactionTypeEmoji['emoji'] }])
-        .catch(() => {})
-    }
-    return
-  }
-
   // mode picker sent, waiting for a button tap — hold this message and deliver it once the
   // session is up (flushQueued), so the first task typed before tapping isn't lost.
   if (pendingModeChoice.has(key)) {
@@ -3018,47 +2941,7 @@ bot.on('callback_query:data', async ctx => {
     await handlePickCallback(ctx, pick)
     return
   }
-  const m = /^perm:(allow|deny|more):([a-km-z]{5})$/.exec(ctx.callbackQuery.data)
-  if (!m) {
-    await ctx.answerCallbackQuery().catch(() => {})
-    return
-  }
-  if (!isAdmin(String(ctx.from.id))) {
-    await ctx.answerCallbackQuery({ text: 'Нет прав' }).catch(() => {})
-    return
-  }
-  const [, behavior, request_id] = m
-
-  if (behavior === 'more') {
-    const details = pendingPermissions.get(request_id)
-    if (!details) {
-      await ctx.answerCallbackQuery({ text: 'Детали недоступны' }).catch(() => {})
-      return
-    }
-    let prettyInput: string
-    try {
-      prettyInput = JSON.stringify(JSON.parse(details.input_preview), null, 2)
-    } catch {
-      prettyInput = details.input_preview
-    }
-    const expanded =
-      `🔐 <b>Запрос разрешения</b>: <code>${escHtml(details.tool_name)}</code>\n\n` +
-      `${escHtml(details.description)}\n\n<pre>${escHtml(prettyInput)}</pre>`
-    const keyboard = new InlineKeyboard()
-      .text('✅ Разрешить', `perm:allow:${request_id}`)
-      .text('❌ Отклонить', `perm:deny:${request_id}`)
-    await ctx.editMessageText(expanded, { parse_mode: 'HTML', reply_markup: keyboard }).catch(() => {})
-    await ctx.answerCallbackQuery().catch(() => {})
-    return
-  }
-
-  const ok = resolvePermission(request_id, behavior as 'allow' | 'deny')
-  const label = !ok ? '🤷 Сессия ушла' : behavior === 'allow' ? '✅ Разрешено' : '❌ Отклонено'
-  await ctx.answerCallbackQuery({ text: label }).catch(() => {})
-  const msg = ctx.callbackQuery.message
-  if (msg && 'text' in msg && msg.text) {
-    await ctx.editMessageText(`${escHtml(msg.text)}\n\n<b>${label}</b>`, { parse_mode: 'HTML' }).catch(() => {})
-  }
+  await ctx.answerCallbackQuery().catch(() => {}) // unmatched callback — ack so the client stops spinning
 })
 
 bot.catch(err => log(`handler error (polling continues): ${err.error}`))

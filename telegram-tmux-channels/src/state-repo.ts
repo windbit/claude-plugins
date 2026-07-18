@@ -12,9 +12,6 @@ import { join } from 'path'
 import type { Picker } from './picker'
 
 type PendingAnswer = { dir: string; at: number }
-// A permission request awaiting an allow/deny tap. The live socket is NOT stored (it dies with a
-// restart) — only `key` (the binding), so on reboot we re-resolve a fresh conn for that session.
-export type PersistedPermission = { tool_name: string; description: string; input_preview: string; key: string; at: number }
 // An open TUI picker mirrored to Telegram buttons. Keyed by tmux pane. `key` (the binding) lets us
 // reject a tap if the pane got recycled to a different session before the poll loop reconciled.
 export type PersistedPicker = {
@@ -24,11 +21,10 @@ export type HubState = {
   version: 1
   pendingAnswer: Record<string, PendingAnswer>
   lastFallback: Record<string, string>
-  permissions: Record<string, PersistedPermission>
   pickers: Record<string, PersistedPicker>
 }
 
-const empty = (): HubState => ({ version: 1, pendingAnswer: {}, lastFallback: {}, permissions: {}, pickers: {} })
+const empty = (): HubState => ({ version: 1, pendingAnswer: {}, lastFallback: {}, pickers: {} })
 
 export class HubStateRepository {
   private state: HubState = empty()
@@ -46,10 +42,13 @@ export class HubStateRepository {
     try {
       const raw = JSON.parse(readFileSync(this.file, 'utf8')) as Partial<HubState>
       if (raw && raw.version === 1) {
+        // pick known keys only — don't spread `...raw`, or a removed/old field (e.g. a legacy
+        // `permissions` bucket) rides forward and gets re-persisted forever.
         this.state = {
-          ...empty(), ...raw,
-          pendingAnswer: raw.pendingAnswer ?? {}, lastFallback: raw.lastFallback ?? {},
-          permissions: raw.permissions ?? {}, pickers: raw.pickers ?? {},
+          version: 1,
+          pendingAnswer: raw.pendingAnswer ?? {},
+          lastFallback: raw.lastFallback ?? {},
+          pickers: raw.pickers ?? {},
         }
       }
     } catch {} // no file / corrupt → start empty
@@ -62,10 +61,6 @@ export class HubStateRepository {
   setPending(key: string, v: PendingAnswer): void { this.state.pendingAnswer[key] = v; this.schedule() }
   delPending(key: string): void { delete this.state.pendingAnswer[key]; this.schedule() }
   setFallback(key: string, text: string): void { this.state.lastFallback[key] = text; this.schedule() }
-
-  permissionEntries(): [string, PersistedPermission][] { return Object.entries(this.state.permissions) }
-  setPermission(id: string, v: PersistedPermission): void { this.state.permissions[id] = v; this.schedule() }
-  delPermission(id: string): void { delete this.state.permissions[id]; this.schedule() }
 
   pickerEntries(): [string, PersistedPicker][] { return Object.entries(this.state.pickers) }
   setPicker(pane: string, v: PersistedPicker): void { this.state.pickers[pane] = v; this.schedule() }
