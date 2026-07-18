@@ -14,7 +14,7 @@
 | 7 | `permissions` | кнопки allow/deny/подробнее, текст `y/n <token>` | `doPermissionRequest`, `resolvePermission` | ⬜ |
 | 8 | `status-posts` | самообновляемые посты: агенты/тудушки/скиллы (PerTurnEditablePost) | `PerTurnEditablePost`, `subagent-hook.ts` | ⬜ |
 | 9 | `ops-commands` | `/compact` `/clear` `/esc`(дренаж очереди) `/enter` `/status` `/model` | ops-диспатч в `hub.ts`, `parseOpsCommand` | ⬜ |
-| 10 | `live-views` | `/screen`(PNG) `/last`(текст), one-per-pane, Закрыть, авто-стоп, 5с | `startLiveScreen`, `paneDigest`, `renderScreenPng` | 🟡 |
+| 10 | `live-views` | `/screen`(PNG) `/last`(текст), one-per-pane, Закрыть, авто-стоп, 5с | `startLiveScreen`, `paneDigest`, `renderScreenPng` | 🟢 (P1/P3/P4/N1/N2/N3 ✅; остаётся P2 chrome, N4 рестарт-шов) |
 | 11 | `voice` | STT входящих, TTS `reply(voice:true)` | STT/TTS в `hub.ts`/`stub.ts` | ⬜ |
 | 12 | `skills` | глобальные скиллы как команды бота, меню `/skills` (пагинация), инъекция слэша (фаззи-фикс) | `skills.ts`, `typeSlashCommand`, `injectSlashToPanes` | ⬜ |
 | 13 | `reply-fallback` | добор ответа из транскрипта на turnend, если агент не отправил | `forwardFallbackReply`, `session-id.ts` | ⬜ |

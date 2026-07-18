@@ -21,9 +21,21 @@ bug→guard), адаптирована под бота без веб-UI.
    аккаунтом-драйвером). Быстрый снимок — headless: `google-chrome --headless=new
    --user-data-dir=<PROF> --virtual-time-budget=14000 --screenshot=out.png
    "https://web.telegram.org/a/#<chatId>"` (перед запуском `rm -f <PROF>/SingletonLock`).
-   ⚠️ **Гоча headless:** ленивый контент (reply-quote превью, кастом-эмодзи, медиа) может застыть
-   в «Loading…» — это артефакт снимка, НЕ баг. Для однозначного вердикта — интерактивный
-   MCP-браузер (после рестарта сессии он поднимется на том же профиле) или глаза Ромы.
+   ⚠️ **Гоча headless (подтверждено 2026-07-18):** ленивый контент (reply-quote превью,
+   кастом-эмодзи, медиа) грузится не мгновенно — короткий снимок ловит «Loading…», хотя в живом
+   клиенте всё резолвится. Это артефакт таймингов, НЕ баг. Фикс авто-снимка: ждать дольше (headless
+   `--virtual-time-budget` мало для reply-превью, дай 20–30с), лучше — **MCP-браузер + `browser_wait_for`**
+   на нужный текст перед `browser_take_screenshot`. Снять RDP-дисплей headless НЕ выходит (`grim` →
+   «no wl_output», `gnome-screenshot` → пустой X11-fallback; mutter/RDP не отдаёт wlr-screencopy), так что
+   **headed-окно — только для живых глаз Ромы**. Правило: не судить «баг рендера» по одному быстрому кадру.
+   ⚙️ **Пин профиля для MCP-браузера:** чтобы `plugin:playwright` (Microsoft `@playwright/mcp`) поднимался
+   на нашем залогиненном профиле, в его `.mcp.json` добавлены аргументы
+   `--browser chrome --user-data-dir /home/user/.cache/ms-playwright-mcp/telegram-profile`
+   (файлы: `~/.claude/plugins/cache/claude-plugins-official/playwright/unknown/.mcp.json` и зеркало в
+   `marketplaces/.../external_plugins/playwright/.mcp.json`). Применяется **только при ПОЛНОМ рестарте
+   сессии claude** (`/mcp reconnect` переиспользует старую команду). Может слететь при апдейте плагина —
+   тогда прописать заново. Логин раскладывается в профиль разово (headed-chrome на RDP-дисплее → вход
+   под аккаунтом-драйвером; K и A логинятся раздельно, нам нужен /a/).
 
 Толстый e2e — антипаттерн. Если баг можно поймать юнитом — пишем юнит, а не сценарий.
 
