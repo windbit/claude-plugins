@@ -88,8 +88,12 @@ a platform limitation, not a plugin one.) The hub autospawns on the first stub c
   dev warning).
 - `/compact`, `/clear`, `/esc`, `/enter` (submit whatever's in the input line, e.g. a `/compact` that got typed but not sent), `/restart`, `/stop` (graceful, no relaunch) — for a live session.
 - `/model` — opens the CLI's model picker as Telegram buttons (via the picker bridge).
-- `/screen` — PNG snapshot of the live pane (headless-chrome render of the ANSI capture) —
-  escape hatch for any TUI state the picker bridge doesn't recognize.
+- `/screen` — live, self-updating PNG of the pane (headless-chrome render of the ANSI capture),
+  with a Close button — escape hatch for any TUI state the picker bridge doesn't recognize.
+- `/last` — same live view as `/screen` but as text: a digest of the pane (recent output the
+  user sees + the live bottom — spinner, token %, permission mode), border/blank noise stripped.
+  No chrome, so it's also `/screen`'s fallback when chrome is unavailable. Both refresh every 5s
+  and auto-stop after 3 min (the message + Close button stay).
 - Won't start a second session if claude is already running in the folder (so `--continue`
   doesn't fork a foreign conversation).
 - An unexpected death (tmux/process gone without an explicit `/restart`) gets a 💀 notice after
