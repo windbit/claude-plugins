@@ -10,7 +10,7 @@
 | 3 | `session-lifecycle` | `/resume` `/new` `/restart` `/stop`, автоспавн хаба, авто-ack стартовых промптов, не-двойной-старт, `reviveBoundSessions` | `spawnSession`, `restartSession`, `stopSession` | ⬜ |
 | 4 | `death-notice` | 💀 при пропаже tmux/процесса без `/restart`, грейс | `notifyUnexpectedDeath` | ⬜ |
 | 5 | `core-messaging` | входящее→сессия (только reply, не транскрипт), `reply`/`react`/`edit_message`, очередь при спавне | `handleInbound`, `enqueueForTopic`/`flushQueued` | ⬜ |
-| 6 | `picker-bridge` | `AskUserQuestion`/`/model`→кнопки, single/multi/custom, тап→кейстроки, авто-ack trust-промптов | `detectPicker`, `picker.ts`, `handlePickCallback` | ⬜ |
+| 6 | `picker-bridge` | `AskUserQuestion`/`/model`→кнопки, single/multi/custom, тап→кейстроки, авто-ack trust-промптов | `detectPicker`, `picker.ts`, `handlePickCallback` | 🟢 (PB1 single ✅, PB2 /model ✅, PB5 trust-ack ✅; TODO multi/custom/PB6-7) |
 | 7 | `permissions` | разрешение тула → picker Yes/No в топике (канальный 🔐-путь убран) | picker-мост (`detectPicker`) | 🟢 (канальный путь удалён 0a9619c; picker — единственный UX, проверено e2e) |
 | 8 | `status-posts` | самообновляемые посты: агенты/тудушки/скиллы (PerTurnEditablePost) | `PerTurnEditablePost`, `subagent-hook.ts` | ⬜ |
 | 9 | `ops-commands` | `/compact` `/clear` `/esc`(дренаж очереди) `/enter` `/status` `/model` | ops-диспатч в `hub.ts`, `parseOpsCommand` | ⬜ |
