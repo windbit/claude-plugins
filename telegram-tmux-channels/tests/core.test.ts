@@ -16,6 +16,7 @@ import {
   parseError,
   parseWorkflow,
   paneIsWorking,
+  paneDigest,
 } from '../src/tmux-ops'
 import { isClaudeArgv, claudePidsInDir, cmdlineOf, findClaudeAncestor } from '../src/proc'
 import {
@@ -173,8 +174,43 @@ describe('tmux-ops', () => {
     expect(parseOpsCommand('/status')).toEqual({ cmd: 'status' })
     expect(parseOpsCommand('/model')).toEqual({ cmd: 'model' })
     expect(parseOpsCommand('/stop')).toEqual({ cmd: 'stop' })
+    expect(parseOpsCommand('/screen')).toEqual({ cmd: 'screen' })
+    expect(parseOpsCommand('/last')).toEqual({ cmd: 'last' })
     expect(parseOpsCommand('compact')).toBeUndefined()
     expect(parseOpsCommand('/unknown x')).toBeUndefined()
+  })
+
+  test('paneDigest: strips box-drawing/blank noise, keeps recent content + bottom', () => {
+    // shape of a real Claude TUI capture: content, blank padding, the input-box border runs,
+    // then the live footer (permission-mode + token line).
+    const pane = [
+      '     #7555  Console stand fully operational',
+      '     #7556  migration completed and reported',
+      '',
+      '⏺ /effort',
+      '  ⎿  Cancelled',
+      '',
+      '',
+      '─────────────────────────────────────────────',
+      '❯                                             ',
+      '─────────────────────────────────────────────',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · 4%',
+    ].join('\n')
+    const out = paneDigest(pane)
+    expect(out).toContain('migration completed')
+    expect(out).toContain('Cancelled')
+    expect(out).toContain('bypass permissions on') // the live bottom is kept
+    expect(out).not.toMatch(/─{5,}/) // border rules stripped
+    expect(out.split('\n').every(l => l.trim() !== '')).toBe(true) // no blank lines
+  })
+
+  test('paneDigest: caps to the last maxLines and maxChars', () => {
+    const many = Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\n')
+    expect(paneDigest(many, 10).split('\n')).toHaveLength(10)
+    expect(paneDigest(many, 10)).toContain('line 99')
+    expect(paneDigest(many, 10)).not.toContain('line 80')
+    const huge = 'x'.repeat(9000)
+    expect(paneDigest(huge, 24, 3500).length).toBeLessThanOrEqual(3502) // + the "…\n" prefix
   })
 
   test('parseCompaction: pane snapshots (real formats)', () => {

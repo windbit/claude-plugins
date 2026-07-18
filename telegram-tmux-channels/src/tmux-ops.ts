@@ -3,12 +3,12 @@
 
 export type OpsCommand =
   | 'compact' | 'clear' | 'esc' | 'enter' | 'restart' | 'resume' | 'new' | 'status'
-  | 'bind' | 'unbind' | 'allow' | 'model' | 'stop' | 'screen' | 'delete' | 'skills' | 'reload'
+  | 'bind' | 'unbind' | 'allow' | 'model' | 'stop' | 'screen' | 'last' | 'delete' | 'skills' | 'reload'
 
 export function parseOpsCommand(
   text: string,
 ): { cmd: OpsCommand; bot?: string; arg?: string } | undefined {
-  const m = /^\/(compact|clear|esc|enter|restart|resume|new|status|bind|unbind|allow|model|stop|screen|delete|skills|reload)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
+  const m = /^\/(compact|clear|esc|enter|restart|resume|new|status|bind|unbind|allow|model|stop|screen|last|delete|skills|reload)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
     text.trim(),
   )
   if (!m) {
@@ -321,6 +321,24 @@ export async function capturePane(pane: string): Promise<string> {
   })
   await proc.exited
   return await new Response(proc.stdout).text()
+}
+
+// A line that carries no reading value on its own: blank, or made only of box-drawing / rule
+// characters (the input-box borders and separator rules Claude's TUI draws).
+const NOISE_LINE_RE = /^[\s─│╭╮╰╯┼┤├┴┬┌┐└┘═║╔╗╚╝▁▏▕▔█░▒▓▌▐▄▀·—–_]*$/u
+
+// /last: the pane as READABLE TEXT — the recent content the user sees (last diff / message) plus
+// the live bottom (spinner, token %, permission-mode line), with the giant border runs and blank
+// padding stripped. tmux capture is only the visible viewport, so this is "what's on screen now",
+// not scrollback. Pure — tested in core.test.ts.
+export function paneDigest(text: string, maxLines = 24, maxChars = 3500): string {
+  const kept = text
+    .split('\n')
+    .map(l => l.replace(/\s+$/, '')) // trailing spaces add nothing
+    .filter(l => !NOISE_LINE_RE.test(l))
+  let out = kept.slice(-maxLines).join('\n').trim()
+  if (out.length > maxChars) out = '…\n' + out.slice(out.length - maxChars)
+  return out
 }
 
 // claude's startup prompts where the default option is preselected (Enter

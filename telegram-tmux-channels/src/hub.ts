@@ -23,7 +23,7 @@ import { Router } from './router'
 import { chunk, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES, PHOTO_EXTS } from './chunk'
 import { mdToHtml } from './md-html'
 import {
-  parseOpsCommand, parseCompaction, parseContextPct, parseError, parseWorkflow, paneIsWorking, sendKeys, typeLine, typeSlashCommand, selectOption, restartSession, stopSession, alive,
+  parseOpsCommand, parseCompaction, parseContextPct, parseError, parseWorkflow, paneIsWorking, paneDigest, sendKeys, typeLine, typeSlashCommand, selectOption, restartSession, stopSession, alive,
   hasTmuxSession, ensureTmuxSession, killTmuxSession, buildLaunch, shellQuote, ackStartupPrompts,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
@@ -900,6 +900,7 @@ const OPS_COMMANDS: { command: string; description: string }[] = [
   { command: 'status', description: 'Статус сессии (папка/tmux/claude/лимиты)' },
   { command: 'resume', description: 'Поднять сессию (с выбором, какую)' },
   { command: 'screen', description: 'Показать экран сессии как есть' },
+  { command: 'last', description: 'Последнее с экрана текстом (живо, без картинки)' },
   { command: 'new', description: 'Запустить свежую сессию' },
   { command: 'skills', description: 'Проектные скиллы этой сессии (кнопками)' },
   { command: 'reload', description: 'Пересканировать скиллы плагинов → команды' },
@@ -1673,16 +1674,21 @@ async function renderScreenPng(pane: string): Promise<Uint8Array | undefined> {
 // chrome (~1-2s), so refresh only when the pane text actually changed (cheap capturePane
 // compare); auto-stop refreshing after SCREEN_LIVE_MS so an abandoned view doesn't render forever
 // (the message + Close button stay so it can still be dismissed).
-type LiveScreen = { chatId: string; threadId?: number; msgId: number; pane: string; lastText: string; timer?: ReturnType<typeof setInterval> }
+// kind: 'png' = /screen (headless-chrome photo), 'text' = /last (paneDigest as a <pre> message).
+// Both share the same live-view lifecycle (one self-updating message, Close button, auto-stop).
+type LiveScreen = { chatId: string; threadId?: number; msgId: number; pane: string; lastText: string; kind: 'png' | 'text'; timer?: ReturnType<typeof setInterval> }
 const liveScreens = new Map<string, LiveScreen>() // token -> view
 let screenSeq = 0
-const SCREEN_REFRESH_MS = 3000
+const SCREEN_REFRESH_MS = 5000 // calm cadence — a busier tick just spams "edited" on the message
 const SCREEN_LIVE_MS = 3 * 60_000
 
 const closeKb = (token: string) => new InlineKeyboard().text('✖️ Закрыть', `scrclose:${token}`)
 // live timestamp in the caption — so it's visibly "alive" even when the pane content is static
 const screenCap = (pane: string, note?: string) =>
   `🖥 <code>${escHtml(pane)}</code> · ${note ?? new Date().toLocaleTimeString('ru-RU')}`
+// /last message body: header (live timestamp so an unchanged pane still edits cleanly) + digest
+const digestMsg = (pane: string, digest: string, note?: string) =>
+  `📄 <code>${escHtml(pane)}</code> · ${note ?? new Date().toLocaleTimeString('ru-RU')}\n<pre>${escHtml(digest || '—')}</pre>`
 
 function closeLiveScreen(token: string): LiveScreen | undefined {
   const v = liveScreens.get(token)
@@ -1701,9 +1707,15 @@ function stopRefreshing(token: string): void {
   }
   clearInterval(v.timer)
   v.timer = undefined
-  void bot.api
-    .editMessageCaption(v.chatId, v.msgId, { caption: screenCap(v.pane, 'обновление остановлено'), parse_mode: 'HTML', reply_markup: closeKb(token) })
-    .catch(() => {})
+  if (v.kind === 'text') {
+    void bot.api
+      .editMessageText(v.chatId, v.msgId, digestMsg(v.pane, paneDigest(v.lastText), 'обновление остановлено'), { parse_mode: 'HTML', reply_markup: closeKb(token) })
+      .catch(() => {})
+  } else {
+    void bot.api
+      .editMessageCaption(v.chatId, v.msgId, { caption: screenCap(v.pane, 'обновление остановлено'), parse_mode: 'HTML', reply_markup: closeKb(token) })
+      .catch(() => {})
+  }
 }
 
 async function refreshLiveScreen(token: string): Promise<void> {
@@ -1712,6 +1724,15 @@ async function refreshLiveScreen(token: string): Promise<void> {
     return
   }
   const text = await capturePane(v.pane).catch(() => '')
+  if (v.kind === 'text') {
+    // editMessageText is cheap (no chrome) — always re-edit; the live timestamp makes an
+    // unchanged pane still a distinct edit (Telegram rejects an identical body).
+    v.lastText = text
+    await bot.api
+      .editMessageText(v.chatId, v.msgId, digestMsg(v.pane, paneDigest(text)), { parse_mode: 'HTML', reply_markup: closeKb(token) })
+      .catch(() => {})
+    return
+  }
   if (text === v.lastText) {
     // pane unchanged — just tick the caption (cheap, no chrome), so it's visibly live
     await bot.api
@@ -1735,10 +1756,24 @@ async function refreshLiveScreen(token: string): Promise<void> {
     .catch(() => {})
 }
 
-async function startLiveScreen(chatId: string, threadId: number | undefined, pane: string): Promise<void> {
+async function startLiveScreen(chatId: string, threadId: number | undefined, pane: string, kind: 'png' | 'text' = 'png'): Promise<void> {
   const token = String(++screenSeq)
   const kb = closeKb(token)
   const threadOpt = threadId != null ? { message_thread_id: threadId } : {}
+
+  if (kind === 'text') {
+    const raw = await capturePane(pane).catch(() => '')
+    const sent = await bot.api
+      .sendMessage(chatId, digestMsg(pane, paneDigest(raw)), { ...threadOpt, parse_mode: 'HTML', reply_markup: kb })
+      .catch(() => undefined)
+    if (sent) {
+      const timer = setInterval(() => void refreshLiveScreen(token), SCREEN_REFRESH_MS)
+      liveScreens.set(token, { chatId, ...(threadId != null ? { threadId } : {}), msgId: sent.message_id, pane, lastText: raw, kind: 'text', timer })
+      setTimeout(() => stopRefreshing(token), SCREEN_LIVE_MS)
+    }
+    return
+  }
+
   const png = await renderScreenPng(pane).catch(() => undefined)
   if (png) {
     const sent = await bot.api
@@ -1747,20 +1782,13 @@ async function startLiveScreen(chatId: string, threadId: number | undefined, pan
     if (sent) {
       const lastText = await capturePane(pane).catch(() => '')
       const timer = setInterval(() => void refreshLiveScreen(token), SCREEN_REFRESH_MS)
-      liveScreens.set(token, { chatId, ...(threadId != null ? { threadId } : {}), msgId: sent.message_id, pane, lastText, timer })
+      liveScreens.set(token, { chatId, ...(threadId != null ? { threadId } : {}), msgId: sent.message_id, pane, lastText, kind: 'png', timer })
       setTimeout(() => stopRefreshing(token), SCREEN_LIVE_MS) // stop refreshing; Close still works
       return
     }
   }
-  // no chrome / photo failed → static text screen (still with a Close button)
-  const text = await capturePane(pane).catch(() => '')
-  const tail = text.length > 3600 ? text.slice(-3600) : text
-  const sent = await bot.api
-    .sendMessage(chatId, `🖥 <code>${escHtml(pane)}</code>\n<pre>${escHtml(tail)}</pre>`, { ...threadOpt, parse_mode: 'HTML', reply_markup: kb })
-    .catch(() => undefined)
-  if (sent) {
-    liveScreens.set(token, { chatId, ...(threadId != null ? { threadId } : {}), msgId: sent.message_id, pane, lastText: tail })
-  }
+  // no chrome / photo failed → fall back to the live text view (same as /last)
+  await startLiveScreen(chatId, threadId, pane, 'text')
 }
 
 // tmux+launch for a binding — shared by /resume,/new and auto-topic creation
@@ -2454,7 +2482,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     return
   }
 
-  if (cmd === 'compact' || cmd === 'clear' || cmd === 'esc' || cmd === 'enter' || cmd === 'restart' || cmd === 'model' || cmd === 'stop' || cmd === 'screen') {
+  if (cmd === 'compact' || cmd === 'clear' || cmd === 'esc' || cmd === 'enter' || cmd === 'restart' || cmd === 'model' || cmd === 'stop' || cmd === 'screen' || cmd === 'last') {
     if (live.length === 0) {
       void say('⚠️ Нет живой сессии. Попробуй <code>/resume</code>.')
       return
@@ -2495,6 +2523,13 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
           await startLiveScreen(chat_id, threadId, s.pane)
           // drop the "/screen" command itself too (works where the bot can delete — groups; a
           // DM won't let a bot delete the user's message, hence best-effort).
+          if (msgId != null) {
+            void bot.api.deleteMessage(chat_id, msgId).catch(() => {})
+          }
+        } else if (cmd === 'last') {
+          // Same live view as /screen but text-only (paneDigest) — readable recent output +
+          // live bottom, no headless-chrome render. Self-updating with a Close button.
+          await startLiveScreen(chat_id, threadId, s.pane, 'text')
           if (msgId != null) {
             void bot.api.deleteMessage(chat_id, msgId).catch(() => {})
           }
