@@ -17,7 +17,7 @@
 | 10 | `live-views` | `/screen`(PNG) `/last`(текст), one-per-pane, Закрыть, авто-стоп, 5с | `startLiveScreen`, `paneDigest`, `renderScreenPng` | 🟢 (P1/P3/P4/N1/N2/N3 ✅; остаётся P2 chrome, N4 рестарт-шов) |
 | 11 | `voice` | STT входящих, TTS `reply(voice:true)` | STT/TTS в `hub.ts`/`stub.ts` | ⬜ |
 | 12 | `skills` | глобальные скиллы как команды бота, меню `/skills` (пагинация), инъекция слэша (фаззи-фикс) | `skills.ts`, `typeSlashCommand`, `injectSlashToPanes` | 🟢 (SK2 регрессия-литерал ✅ e2e, SK3 пустой стейт ✅, SK5 шов ✅; TODO меню-пагинация+мэнглинг) |
-| 13 | `reply-fallback` | добор ответа из транскрипта на turnend, если агент не отправил | `forwardFallbackReply`, `session-id.ts` | ⬜ |
+| 13 | `reply-fallback` | добор ответа из транскрипта на turnend, если агент не отправил | `forwardFallbackReply`, `session-id.ts` | 🟢 (RF1 авто-досыл ✅ e2e, RF2/RF3/RF4 ✅) |
 | 14 | `restart-persistence` | Stage 1 посты / Stage 2 fallback / Stage 3 пермишены+пикеры через рестарт | `state-repo.ts`, hydrate в `hub.ts` | 🟡 (RP3 пикеры ✅ end-to-end, RP1 fallback-маркер ✅; RP5 пермишены — нужна non-bypass сессия) |
 | 15 | `context-badge` | `⚠️ Контекст NN%` перед ответом при пороге | `parseContextPct`, `TELEGRAM_CONTEXT_WARN_PCT` | ⬜ |
 | 16 | `pane-detectors` | детект компакции/воркфлоу/ошибок в `pollScreens` | `handleCompaction`/`handleWorkflow`/`handleErrors` | ⬜ |
