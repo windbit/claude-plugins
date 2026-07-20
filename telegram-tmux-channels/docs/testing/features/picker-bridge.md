@@ -57,7 +57,11 @@
   - **PB1 ✅** single-select (через RP3: `AskUserQuestion` Красный/Синий → тап → ответ агенту).
   - **PB2 ✅** `/model` → нативный пикер моделей кнопками (msg89: Default/Sonnet/Fable/Opus/Haiku),
     тап «Default» разрулил.
-  - **PB5 ✅ (по наблюдению)** — все `/new`/`/resume` в этой сессии проходили trust/dev-промпты
-    без всплытия пикера в топик (`isAutoAckPrompt` + ackStartupPrompts).
+  - **PB5 — БЫЛО ошибочно ✅ «по наблюдению», оказалось 🔴** — 2026-07-20 прод завис на
+    «I am using this for local development»: старый `ackStartupPrompts` жал Enter ОДИН раз и не
+    перепроверял, проглоченное нажатие вешало сессию навсегда. Пометка «✅ по наблюдению» это
+    скрыла. Починено переносом ack в screen-loop (жмёт, пока промпт не исчез; видит пейны без
+    подключённого stub) — **теперь PB5 ✅ по реальному e2e**: пейн, застрявший на промпте без
+    stub, хаб сам разблокировал (`startup prompt auto-acked`). См. regression-checklist.
 - **TODO проход 2:** PB3 custom-ответ («Свой вариант»→текст→`typeLine`), PB4 multi-select
   (чекбоксы+Submit), PB6 «отвечено в терминале», PB7 non-hub сессия не хайджекает.
