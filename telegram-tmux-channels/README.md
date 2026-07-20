@@ -108,7 +108,7 @@ a platform limitation, not a plugin one.) The hub autospawns on the first stub c
 | `TELEGRAM_PROJECTS_DIR` | `$HOME/projects` | base for `/bind <name>` |
 | `TELEGRAM_LAUNCH_CMD` | `claude --permission-mode bypassPermissions` | base launch for `/new`,`/resume` (channel flags appended automatically) |
 | `TELEGRAM_HUB_AUTOSPAWN` | `1` | `0` disables autospawn (for a service-only install) |
-| `TELEGRAM_CONTEXT_WARN_PCT` | `80` | prepend `⚠️ Контекст NN%` to an agent's text reply once its context-window usage reaches this %; `0` disables |
+| `TELEGRAM_CONTEXT_WARN_PCT` | `80` | append `⚠️ Контекст: NN%` under an agent's text reply once its context-window usage reaches this %; `0` disables |
 | `TELEGRAM_DEBUG_LOG` | `0` | `1` enables the debug log (`screenlog.jsonl`, all hub traffic); off by default |
 | `OPENAI_API_KEY` | — | enables voice (STT + TTS); unset = voice silently disabled |
 | `STT_OPENAI_MODEL` | `gpt-4o-transcribe` | transcription model for incoming voice notes |

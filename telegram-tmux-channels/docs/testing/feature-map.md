@@ -19,7 +19,7 @@
 | 12 | `skills` | глобальные скиллы как команды бота, меню `/skills` (пагинация), инъекция слэша (фаззи-фикс) | `skills.ts`, `typeSlashCommand`, `injectSlashToPanes` | 🟢 (SK2 регрессия-литерал ✅ e2e, SK3 пустой стейт ✅, SK5 шов ✅; TODO меню-пагинация+мэнглинг) |
 | 13 | `reply-fallback` | добор ответа из транскрипта на turnend, если агент не отправил | `forwardFallbackReply`, `session-id.ts` | 🟢 (RF1 авто-досыл ✅ e2e, RF2/RF3/RF4 ✅) |
 | 14 | `restart-persistence` | Stage 1 посты / Stage 2 fallback / Stage 3 пермишены+пикеры через рестарт | `state-repo.ts`, hydrate в `hub.ts` | 🟡 (RP3 пикеры ✅ end-to-end, RP1 fallback-маркер ✅; RP5 пермишены — нужна non-bypass сессия) |
-| 15 | `context-badge` | `⚠️ Контекст NN%` перед ответом при пороге | `parseContextPct`, `TELEGRAM_CONTEXT_WARN_PCT` | ⬜ |
+| 15 | `context-badge` | `⚠️ Контекст: NN%` ПОД ответом при пороге | `parseContextPct`, `TELEGRAM_CONTEXT_WARN_PCT` | 🟡 (guard «нет pct → нет бейджа» ✅ прогон; CB1 сам бейдж ⬜ — в пейне не рендерится числовой % ) |
 | 16 | `pane-detectors` | детект компакции/воркфлоу/ошибок в `pollScreens` | `handleCompaction`/`handleWorkflow`/`handleErrors` | 🟢 (PD1 компакция прогресс→готово ✅ e2e, PD4 анти-ложняк ✅ юнит; PD2 ошибки / PD3 workflow — e2e ⬜, парсеры юнитами ✅) |
 | 17 | `debug-log` | `screenlog.jsonl` — таймлайн, кольцо 1000, финальный текст | `logDebugEvent` | 🟢 (DL1 типы ✅, DL2 финальный payload ✅ — решил баг в voice, DL3 кольцо 1618→1000 ✅; DL4 off-by-default / DL5 несериализуемый — ⬜) |
 
