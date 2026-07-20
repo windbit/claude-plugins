@@ -344,26 +344,6 @@ export function paneDigest(text: string, maxLines = 24, maxChars = 3500): string
 // claude's startup prompts where the default option is preselected (Enter
 // confirms): new-folder trust and the dev-channel warning. They can appear in
 // sequence (trust first, then dev-warning), so we click both over a ~30s window.
-const STARTUP_PROMPTS: Array<{ marker: string; label: string }> = [
-  { marker: 'I trust this folder', label: 'folder-trust' },
-  { marker: 'I am using this for local development', label: 'dev-channel warning' },
-]
-
-export async function ackStartupPrompts(pane: string, log: (s: string) => void): Promise<void> {
-  const acked = new Set<string>()
-  for (let i = 0; i < 30 && acked.size < STARTUP_PROMPTS.length; i++) {
-    await sleep(1000)
-    const text = await capturePane(pane).catch(() => '')
-    for (const p of STARTUP_PROMPTS) {
-      if (!acked.has(p.label) && text.includes(p.marker)) {
-        await sendKeys(pane, 'Enter')
-        acked.add(p.label)
-        log(`${p.label} acknowledged`)
-        await sleep(600) // let the next prompt render before re-capturing
-      }
-    }
-  }
-}
 
 export function alive(pid: number): boolean {
   try {
@@ -438,5 +418,5 @@ export async function restartSession(
   const cmd = envPrefix + relaunchCommand(cmdline)
   log(`restart: relaunch ${cmd}`)
   await typeLine(pane, cmd)
-  await ackStartupPrompts(pane, log)
+  // startup prompts are acked by the hub's screen loop (retries until the prompt is actually gone)
 }

@@ -24,7 +24,7 @@ import { chunk, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES, PHOTO_EXTS } from './chun
 import { mdToHtml } from './md-html'
 import {
   parseOpsCommand, parseCompaction, parseContextPct, parseError, parseWorkflow, paneIsWorking, paneDigest, sendKeys, typeLine, typeSlashCommand, selectOption, restartSession, stopSession, alive,
-  hasTmuxSession, ensureTmuxSession, killTmuxSession, buildLaunch, shellQuote, ackStartupPrompts,
+  hasTmuxSession, ensureTmuxSession, killTmuxSession, buildLaunch, shellQuote,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
 import { ansiToHtml } from './ansi-html'
@@ -607,7 +607,7 @@ function paneByToken(token: string): string | undefined {
 }
 
 // folder-trust / dev-channel prompts also carry "Esc to cancel"; the hub auto-acks
-// them (ackStartupPrompts), so they must not surface as Telegram pickers.
+// them (see ackStartupPrompt below), so they must not surface as Telegram pickers.
 // The 'Exit anyway' confirm during /stop//restart is NOT here on purpose: it
 // surfaces as Telegram buttons via the picker bridge so the user can see the
 // background task and choose; stopSession auto-answers only after a grace period.
@@ -615,6 +615,47 @@ const AUTO_ACK_MARKERS = ['I trust this folder', 'I am using this for local deve
 
 function isAutoAckPrompt(picker: Picker): boolean {
   return picker.options.some(o => AUTO_ACK_MARKERS.some(m => o.label.includes(m)))
+}
+
+// spawnSession/restartSession also ack these, but only inside a fixed 30s window after typing the
+// launch — a slow start (host reboot with several sessions coming up at once) misses it and the
+// pane then sits on the prompt forever, session dead to the chat. The poll loop sees every pane
+// every tick, so ack here too: whenever a startup prompt shows up, regardless of how it got there
+// (spawn, /restart, revive, a hand-typed launch). Re-ack after a cooldown in case Enter didn't land.
+const autoAcked = new Map<string, { hash: string; at: number }>() // pane -> last ack
+const AUTO_ACK_RETRY_MS = 8000
+
+async function ackStartupPrompt(pane: string, picker: Picker): Promise<void> {
+  const prev = autoAcked.get(pane)
+  if (prev && prev.hash === picker.hash && Date.now() - prev.at < AUTO_ACK_RETRY_MS) {
+    return
+  }
+  autoAcked.set(pane, { hash: picker.hash, at: Date.now() })
+  log(`startup prompt auto-acked on ${pane}: ${picker.title.slice(0, 48)}`)
+  await sendKeys(pane, 'Enter').catch(() => {})
+}
+
+// A session sitting on a startup prompt has NOT connected its stub yet (the MCP stub comes up only
+// after the prompts are answered), so it is invisible to router.all() and PASS 1 never sees it —
+// which is exactly how a swallowed Enter used to hang a pane forever. Scan the tmux session of each
+// bound key that has no live stub and ack there too. Target the session (`=name:`) rather than a
+// pane id, since we have no connection to ask for one.
+async function ackStartupPromptsOnBoundPanes(): Promise<void> {
+  for (const [key, b] of Object.entries(loadBindings())) {
+    if (!b?.dir || router.byBindingKey(key).length > 0) {
+      continue // no dir, or a stub is connected → PASS 1 already covers this pane
+    }
+    const name = sessionName(key, b.dir)
+    if (!(await hasTmuxSession(name).catch(() => false))) {
+      continue
+    }
+    const target = `=${name}:`
+    const text = await captureTimeout(target).catch(() => '')
+    const picker = text ? parsePicker(text) : undefined
+    if (picker && isAutoAckPrompt(picker)) {
+      await ackStartupPrompt(target, picker)
+    }
+  }
 }
 
 function pickerTitleHtml(ap: ActivePicker): string {
@@ -635,6 +676,9 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
   const picker = parsePicker(text)
   const existing = activePickers.get(pane)
   if (!picker || isAutoAckPrompt(picker)) {
+    if (picker) {
+      await ackStartupPrompt(pane, picker) // never surfaced to chat — and never left hanging
+    }
     if (existing) {
       // closed without a TG tap (answered in the TUI) — the answer is unknown to us
       void resolvePickerMessage(existing, '<i>отвечено в терминале</i>')
@@ -1356,6 +1400,8 @@ async function pollScreens(): Promise<void> {
   )
   for (const pane of [...activePickers.keys()]) if (!seen.has(pane)) disarmPicker(pane)
   for (const pane of [...lastPaneText.keys()]) if (!seen.has(pane)) lastPaneText.delete(pane)
+  for (const pane of [...autoAcked.keys()]) if (!seen.has(pane)) autoAcked.delete(pane)
+  void ackStartupPromptsOnBoundPanes() // panes with no stub yet (stuck on a startup prompt)
   for (const pane of [...compactMessages.keys()]) if (!seen.has(pane)) compactMessages.delete(pane)
   for (const pane of [...lastError.keys()]) if (!seen.has(pane)) lastError.delete(pane)
   for (const pane of [...workflowMessages.keys()]) if (!seen.has(pane)) workflowMessages.delete(pane)
@@ -1793,7 +1839,6 @@ async function spawnSession(
     const envPrefix = `TELEGRAM_BINDING_KEYS=${shellQuote([key])}`
     await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${envPrefix} ${launch}`)
     say(`🚀 <b>${mode === 'resume' ? 'Возобновляю' : 'Запускаю заново'}</b>\n\n<code>${escHtml(launch)}</code>`)
-    void ackStartupPrompts(`=${name}:`, log)
     if (fresh) {
       void captureNewSessionId(binding.dir, before, 60_000).then(id => {
         if (!id) {
