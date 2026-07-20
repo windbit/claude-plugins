@@ -20,21 +20,25 @@ export type StubToHub =
   | { op: 'rpc'; id: number; method: RpcMethod; params: Record<string, unknown> }
   // 'describe' = PreToolUse(Agent/Task) — carries the human description, correlated to the
   // later SubagentStart by promptId (SubagentStart itself only has agent_id/agent_type, no text)
-  | { op: 'subagent'; action: 'describe'; bindingKeys: string[]; promptId: string; description: string }
-  | { op: 'subagent'; action: 'start'; bindingKeys: string[]; promptId: string; agentId: string; agentType: string }
-  | { op: 'subagent'; action: 'stop'; bindingKeys: string[]; agentId: string }
+  // Every hook message also carries the CURRENT session id (hook payload `session_id`), so the
+  // hub can keep bindings.json in sync: /clear or an in-TUI /resume starts a different session
+  // and there is no spawn for the hub to learn it from — without this the binding goes stale and
+  // the next restart resumes the wrong conversation.
+  | { op: 'subagent'; action: 'describe'; bindingKeys: string[]; sessionId?: string; promptId: string; description: string }
+  | { op: 'subagent'; action: 'start'; bindingKeys: string[]; sessionId?: string; promptId: string; agentId: string; agentType: string }
+  | { op: 'subagent'; action: 'stop'; bindingKeys: string[]; sessionId?: string; agentId: string }
   // Stop = the turn ended (Claude finished responding) — closes the current batch so the
   // NEXT subagent start opens a fresh message instead of appending to a finished one
-  | { op: 'subagent'; action: 'turnend'; bindingKeys: string[] }
+  | { op: 'subagent'; action: 'turnend'; bindingKeys: string[]; sessionId?: string }
   // TaskCreate/TaskUpdate (the todo-list tool) — unlike subagents, id/subject/status come
   // straight off one event each, no promptId correlation needed
-  | { op: 'task'; action: 'create'; bindingKeys: string[]; taskId: string; subject: string }
-  | { op: 'task'; action: 'update'; bindingKeys: string[]; taskId: string; status: string }
+  | { op: 'task'; action: 'create'; bindingKeys: string[]; sessionId?: string; taskId: string; subject: string }
+  | { op: 'task'; action: 'update'; bindingKeys: string[]; sessionId?: string; taskId: string; status: string }
   // Skill tool invocation (PreToolUse ^Skill$) — no lifecycle, one event per call
-  | { op: 'skill'; bindingKeys: string[]; skill: string; args?: string }
+  | { op: 'skill'; bindingKeys: string[]; sessionId?: string; skill: string; args?: string }
   // TodoWrite (the ⊡/✓ checklist tool, distinct from TaskCreate/Update) — carries the FULL
   // list on every call, so no per-item lifecycle; the hub just re-renders one message
-  | { op: 'todo'; bindingKeys: string[]; todos: { content: string; status: string }[] }
+  | { op: 'todo'; bindingKeys: string[]; sessionId?: string; todos: { content: string; status: string }[] }
 
 export type HubToStub =
   | { op: 'event'; kind: 'message'; content: string; meta: Record<string, string> }

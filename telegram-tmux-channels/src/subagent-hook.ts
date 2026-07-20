@@ -106,6 +106,14 @@ async function main(): Promise<void> {
     msg = { op: 'subagent', action: 'stop', bindingKeys, agentId }
   }
 
+  // Ride the current session id along on every hook event. `/clear` and an in-TUI `/resume`
+  // switch the conversation without any spawn the hub could learn from, so this is the only
+  // signal that keeps bindings.json pointing at the live session (see hub `syncSessionId`).
+  const sessionId = String(data.session_id ?? '')
+  if (sessionId) {
+    msg = { ...msg, sessionId }
+  }
+
   await new Promise<void>(resolve => {
     let done = false
     const finish = () => {

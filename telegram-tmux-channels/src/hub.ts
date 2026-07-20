@@ -416,9 +416,15 @@ async function transcribeVoice(oggPath: string): Promise<string | undefined> {
     return undefined
   }
   try {
+    const audio = readFileSync(oggPath)
+    // gpt-4o-transcribe caps its OUTPUT at ~2000 tokens and truncates a long voice note
+    // mid-sentence with no error — a 16-min dictation came back as ~10 min of text.
+    // whisper-1 chunks internally and has no such cap, so long notes go there instead.
+    // ~4KB/s for Telegram's Opus → 1.5MB ≈ 6 min, comfortably under the cap.
+    const model = audio.length > 1_500_000 ? 'whisper-1' : STT_MODEL
     const form = new FormData()
-    form.append('file', new Blob([readFileSync(oggPath)]), 'voice.ogg')
-    form.append('model', STT_MODEL)
+    form.append('file', new Blob([audio]), 'voice.ogg')
+    form.append('model', model)
     form.append('language', 'ru')
     const res = await fetch(`${STT_BASE_URL}/audio/transcriptions`, {
       method: 'POST',
@@ -1469,6 +1475,26 @@ function verifyClaimedKeys(session: SessionInfo): SessionInfo {
   return { ...session, bindingKeys: valid.length ? valid : undefined }
 }
 
+// The hub otherwise learns a session id ONLY at spawn, and only for a FRESH start
+// (captureNewSessionId). `/clear` and an in-TUI `/resume` switch the conversation with no spawn at
+// all, so the binding silently kept a stale id (or none) and the next restart resumed the wrong
+// conversation. Hook events carry the live id every turn — persist it whenever it drifts.
+function syncSessionId(bindingKeys: string[], sessionId: string): void {
+  const reg = loadBindings()
+  let changed = false
+  for (const key of bindingKeys) {
+    const b = reg[key]
+    if (b && b.sessionId !== sessionId) {
+      log(`sessionId synced for ${key}: ${b.sessionId ?? '<none>'} → ${sessionId}`)
+      b.sessionId = sessionId
+      changed = true
+    }
+  }
+  if (changed) {
+    saveBindings(reg)
+  }
+}
+
 async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promise<void> {
   if (msg.op === 'subscribe') {
     const session = verifyClaimedKeys(msg.session)
@@ -1486,6 +1512,10 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
       send(sock, { op: 'result', id: msg.id, ok: false, error: e })
     }
     return
+  }
+  // Every hook event carries the live session id — one chokepoint keeps bindings.json honest.
+  if ('bindingKeys' in msg && msg.sessionId) {
+    syncSessionId(msg.bindingKeys, msg.sessionId)
   }
   if (msg.op === 'subagent') {
     await handleSubagentEvent(msg)
