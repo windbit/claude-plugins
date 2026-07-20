@@ -5,7 +5,7 @@
 
 | # | Фича (id) | Что покрывает | Ключевой код | Статус |
 |---|---|---|---|---|
-| 1 | `binding-routing` | `/bind` `/unbind` `/allow`, ключ чата→`bindings.json`→папка→сессии, hot-reload, доступ (admin/allow) | `hub.ts` роутинг, `bindings.ts`, `registry.ts` | ⬜ |
+| 1 | `binding-routing` | `/bind` `/unbind` `/allow`, ключ чата→`bindings.json`→папка→сессии, hot-reload, доступ (admin/allow) | `hub.ts` роутинг, `bindings.ts`, `registry.ts` | 🟢 (BR1 bind ✅, BR2 роутинг при общей папке ✅ e2e, BR3 unbind+kill ✅; BR4/BR5 доступ ⬜ — нужен не-админ аккаунт) |
 | 2 | `trusted-groups` | авто-бинд новых топиков, режимы folder/worktree, хук `wt.py`, транслит кириллицы, выбор режима | `pendingTopics`/`pendingModeChoice`, `runAutoTopic` | 🟢 (TG1 авто-бинд ✅ e2e, TG3 exclude ✅; юниты translit/exclude/merge ✅; TODO worktree+хук, TG4) |
 | 3 | `session-lifecycle` | `/resume` `/new` `/restart` `/stop`, автоспавн хаба, авто-ack стартовых промптов, не-двойной-старт, `reviveBoundSessions` | `spawnSession`, `restartSession`, `stopSession` | 🟢 (SL4 restart+контекст ✅, SL5 не-двойной ✅; SL1-3 ⬜ — были «по наблюдению», по новому правилу не ✅; TODO SL6) |
 | 4 | `death-notice` | 💀 при пропаже tmux/процесса без `/restart`, грейс | `notifyUnexpectedDeath` | 🟢 (DN1 kill→💀 ✅ e2e; DN2 ⬜ — было «по наблюдению»; TODO DN3) |
