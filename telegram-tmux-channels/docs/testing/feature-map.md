@@ -6,7 +6,7 @@
 | # | Фича (id) | Что покрывает | Ключевой код | Статус |
 |---|---|---|---|---|
 | 1 | `binding-routing` | `/bind` `/unbind` `/allow`, ключ чата→`bindings.json`→папка→сессии, hot-reload, доступ (admin/allow) | `hub.ts` роутинг, `bindings.ts`, `registry.ts` | ⬜ |
-| 2 | `trusted-groups` | авто-бинд новых топиков, режимы folder/worktree, хук `wt.py`, транслит кириллицы, выбор режима | `pendingTopics`/`pendingModeChoice`, `runAutoTopic` | ⬜ |
+| 2 | `trusted-groups` | авто-бинд новых топиков, режимы folder/worktree, хук `wt.py`, транслит кириллицы, выбор режима | `pendingTopics`/`pendingModeChoice`, `runAutoTopic` | 🟢 (TG1 авто-бинд ✅ e2e, TG3 exclude ✅; юниты translit/exclude/merge ✅; TODO worktree+хук, TG4) |
 | 3 | `session-lifecycle` | `/resume` `/new` `/restart` `/stop`, автоспавн хаба, авто-ack стартовых промптов, не-двойной-старт, `reviveBoundSessions` | `spawnSession`, `restartSession`, `stopSession` | 🟢 (SL4 restart+контекст ✅, SL5 не-двойной ✅, SL1-3 ✅ набл.; TODO SL6) |
 | 4 | `death-notice` | 💀 при пропаже tmux/процесса без `/restart`, грейс | `notifyUnexpectedDeath` | 🟢 (DN1 kill→💀 ✅, DN2 штатный-без-💀 ✅; TODO DN3 реконнект-в-грейсе) |
 | 5 | `core-messaging` | входящее→сессия (только reply, не транскрипт), `reply`/`react`/`edit_message`, очередь при спавне | `handleInbound`, `enqueueForTopic`/`flushQueued` | 🟢 (CM4 очередь-hold ✅ e2e, CM1/CM5/CM6 ✅ набл.; TODO react/edit-тулы) |
