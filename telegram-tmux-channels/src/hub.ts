@@ -908,12 +908,16 @@ const OPS_COMMANDS: { command: string; description: string }[] = [
 const TG_CMD_MAX = 100 // Telegram's hard cap on bot commands
 const OPS_NAMES = new Set(OPS_COMMANDS.map(c => c.command))
 let globalSkillMap = new Map<string, string>() // mangled command → real skill name
+let lastSkillCount = 0
+let cmdRetryTimer: ReturnType<typeof setTimeout> | undefined
+const CMD_RETRY_MS = 60_000
 
 // Rediscover global skills and (re)register the bot command list. Returns a summary.
 async function refreshCommands(): Promise<string> {
   let skills: Skill[]
+  let failed: number
   try {
-    skills = await discoverGlobalSkills()
+    ;({ skills, failed } = await discoverGlobalSkills())
   } catch (e) {
     log(`refreshCommands: discover failed: ${e}`)
     return '⚠️ Не смог просканировать скиллы.'
@@ -932,7 +936,25 @@ async function refreshCommands(): Promise<string> {
     map.set(cmd, s.name)
     cmds.push({ command: cmd, description: tgDescription(s.description) })
   }
+  // `plugin details` fan-out times out when a boot-time revive burst loads the box; publishing
+  // the survivors would silently strip most of the bot's commands until the next restart.
+  // Keep whatever we published last time and retry once instead.
+  // A failure means the list is incomplete, so always re-run once — at boot (lastSkillCount 0)
+  // that retry is the only thing standing between us and a silently truncated list.
+  if (failed > 0 && !cmdRetryTimer) {
+    cmdRetryTimer = setTimeout(() => {
+      cmdRetryTimer = undefined
+      void refreshCommands()
+    }, CMD_RETRY_MS)
+    cmdRetryTimer.unref?.()
+  }
+  if (failed > 0 && cmds.length < lastSkillCount) {
+    const summary = `⚠️ Скиллы схлопнулись (${cmds.length} < ${lastSkillCount}), ${failed} плагин(ов) не ответили — держу прошлый список, ретрай через ${CMD_RETRY_MS / 1000}с.`
+    log(`refreshCommands: ${summary}`)
+    return summary
+  }
   globalSkillMap = map
+  lastSkillCount = cmds.length
   // Telegram also caps the TOTAL size of the command list (~5k description chars), not
   // just the count — it rejects with BOT_COMMANDS_TOO_MUCH. Rather than guess the exact
   // byte budget, shrink skill descriptions down a ladder and retry until it fits.
@@ -954,7 +976,7 @@ async function refreshCommands(): Promise<string> {
       break
     }
   }
-  const summary = `📋 Команд: ${OPS_COMMANDS.length + cmds.length} (опсы ${OPS_COMMANDS.length} + скиллы ${cmds.length}${dropped ? `, пропущено ${dropped}` : ''}${usedCap < 256 ? `, описания ≤${usedCap}` : ''}).`
+  const summary = `📋 Команд: ${OPS_COMMANDS.length + cmds.length} (опсы ${OPS_COMMANDS.length} + скиллы ${cmds.length}${dropped ? `, пропущено ${dropped}` : ''}${usedCap < 256 ? `, описания ≤${usedCap}` : ''}${failed ? `; ⚠️ ${failed} плагин(ов) не ответили, ретрай через ${CMD_RETRY_MS / 1000}с` : ''}).`
   log(`refreshCommands: ${summary}`)
   return summary
 }
