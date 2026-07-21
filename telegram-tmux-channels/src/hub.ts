@@ -1847,7 +1847,15 @@ async function spawnSession(
     )
     const envPrefix = `TELEGRAM_BINDING_KEYS=${shellQuote([key])}`
     await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${envPrefix} ${launch}`)
-    say(`🚀 <b>${mode === 'resume' ? 'Возобновляю' : 'Запускаю заново'}</b>\n\n<code>${escHtml(launch)}</code>`)
+    // mode 'new' covers two different things: an explicit /new over an EXISTING conversation
+    // (genuinely "заново"), and the very first launch of a binding that never had one — calling
+    // that "заново" reads as if something was discarded, when nothing existed yet.
+    const startedLabel = mode === 'resume'
+      ? '🚀 <b>Возобновляю</b>'
+      : binding.sessionId
+        ? '🚀 <b>Запускаю заново</b>'
+        : '🆕 <b>Запускаю сессию</b>'
+    say(`${startedLabel}\n\n<code>${escHtml(launch)}</code>`)
     if (fresh) {
       void captureNewSessionId(binding.dir, before, 60_000).then(id => {
         if (!id) {
