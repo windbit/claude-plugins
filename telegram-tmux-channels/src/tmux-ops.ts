@@ -143,6 +143,14 @@ export function relaunchCommand(cmdline: string[]): string {
   return shellQuote(out)
 }
 
+// `claude -p '<prompt>'` / `--print` is a one-shot headless run: it answers once and exits. Such a
+// process still connects as a session (it can carry channel flags + binding keys), so it must be
+// distinguishable from a real interactive launch — a binding that "learns" it would relaunch the
+// batch prompt on every revive and die immediately, looping. Pure — tested in core.test.ts.
+export function isHeadlessArgv(argv: string[]): boolean {
+  return argv.some(a => a === '-p' || a === '--print' || a.startsWith('--print='))
+}
+
 export function stripResumeFlags(argv: string[]): string[] {
   const out: string[] = []
   for (let i = 0; i < argv.length; i++) {

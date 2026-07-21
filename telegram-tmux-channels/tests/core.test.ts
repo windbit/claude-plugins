@@ -17,6 +17,7 @@ import {
   parseWorkflow,
   paneIsWorking,
   paneDigest,
+  isHeadlessArgv,
 } from '../src/tmux-ops'
 import { isClaudeArgv, claudePidsInDir, cmdlineOf, findClaudeAncestor } from '../src/proc'
 import {
@@ -178,6 +179,19 @@ describe('tmux-ops', () => {
     expect(parseOpsCommand('/last')).toEqual({ cmd: 'last' })
     expect(parseOpsCommand('compact')).toBeUndefined()
     expect(parseOpsCommand('/unknown x')).toBeUndefined()
+  })
+
+  test('isHeadlessArgv: one-shot -p runs must never be learned as a binding launch command', () => {
+    // the prod loop: a Role-2 review ran with -p, the hub learned it, and every revive replayed
+    // the batch prompt and exited immediately
+    expect(isHeadlessArgv(['claude', '-p', 'Роль 2 …', '--resume', 'abc'])).toBe(true)
+    expect(isHeadlessArgv(['claude', '--print', 'do a thing'])).toBe(true)
+    expect(isHeadlessArgv(['claude', '--print=x'])).toBe(true)
+    // real interactive launches must still be learned
+    expect(isHeadlessArgv(['claude', '--permission-mode', 'bypassPermissions'])).toBe(false)
+    expect(isHeadlessArgv(['claude', '--dangerously-load-development-channels', 'server:telegram'])).toBe(false)
+    // a flag that merely contains "p" is not headless
+    expect(isHeadlessArgv(['claude', '--permission-mode', 'plan'])).toBe(false)
   })
 
   test('paneDigest: strips box-drawing/blank noise, keeps recent content + bottom', () => {

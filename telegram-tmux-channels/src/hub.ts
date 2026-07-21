@@ -23,7 +23,7 @@ import { Router } from './router'
 import { chunk, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES, PHOTO_EXTS } from './chunk'
 import { mdToHtml } from './md-html'
 import {
-  parseOpsCommand, parseCompaction, parseContextPct, parseError, parseWorkflow, paneIsWorking, paneDigest, sendKeys, typeLine, typeSlashCommand, selectOption, restartSession, stopSession, alive,
+  parseOpsCommand, parseCompaction, parseContextPct, parseError, parseWorkflow, paneIsWorking, paneDigest, isHeadlessArgv, sendKeys, typeLine, typeSlashCommand, selectOption, restartSession, stopSession, alive,
   hasTmuxSession, ensureTmuxSession, killTmuxSession, buildLaunch, shellQuote,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
@@ -1581,6 +1581,15 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
 // a live session's argv is remembered in its bindings — /resume relaunches with the same flags
 function learnCmdline(session: SessionInfo): void {
   if (!session.cwd || !session.cmdline?.length) {
+    return
+  }
+  // A headless one-shot (`claude -p '<prompt>'` — e.g. a cron/timer review job) also connects as a
+  // session for this binding, but it must NEVER become the binding's launch command: relaunching it
+  // replays that batch prompt into the user's chat and exits immediately, so the next inbound revives
+  // it again — an endless loop. Hit in prod on 2026-07-21: a Role-2 review ran 5× in 11 minutes and
+  // left the topic with no live session.
+  if (isHeadlessArgv(session.cmdline)) {
+    log(`learnCmdline: ignoring headless (-p) argv for ${session.bindingKeys?.join(',') ?? session.cwd}`)
     return
   }
   const reg = loadBindings()
