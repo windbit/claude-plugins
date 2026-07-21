@@ -158,11 +158,14 @@ function enabledPlugins(): { name: string; installPath: string }[] {
   return out
 }
 
-export async function discoverGlobalSkills(): Promise<Skill[]> {
+// `failed` = plugins whose `plugin details` call errored/timed out. The caller needs it:
+// silently publishing only the survivors strips most of the bot's commands.
+export async function discoverGlobalSkills(): Promise<{ skills: Skill[]; failed: number }> {
   const plugins = enabledPlugins()
   const userSkills = join(homedir(), '.claude/skills')
   const idx = descIndex([userSkills, ...plugins.map(p => p.installPath)])
   const names = new Set<string>()
+  let failed = 0
   await Promise.all(
     plugins.map(async p => {
       try {
@@ -170,8 +173,9 @@ export async function discoverGlobalSkills(): Promise<Skill[]> {
         for (const n of parseSkillsLine(stdout)) {
           names.add(n)
         }
-      } catch {
-        // plugin details can fail (unknown/broken plugin) — skip, don't sink the whole refresh
+      } catch (e) {
+        failed++
+        console.log(`plugin details ${p.name}: ${e}`)
       }
     }),
   )
@@ -182,7 +186,7 @@ export async function discoverGlobalSkills(): Promise<Skill[]> {
       names.add(nm)
     }
   }
-  return [...names].sort().map(name => ({ name, description: idx.get(name) ?? name }))
+  return { skills: [...names].sort().map(name => ({ name, description: idx.get(name) ?? name })), failed }
 }
 
 export function discoverProjectSkills(dir: string): Skill[] {
@@ -224,5 +228,6 @@ if (import.meta.main) {
   assert(tgDescription('a\n b   c') === 'a b c', 'tg desc collapse')
   assert(tgDescription('x'.repeat(300)).length === 256, 'tg desc truncate')
   console.log('skills.ts self-test OK')
-  console.log('global skills:', (await discoverGlobalSkills()).length)
+  const g = await discoverGlobalSkills()
+  console.log('global skills:', g.skills.length, 'failed plugins:', g.failed)
 }
