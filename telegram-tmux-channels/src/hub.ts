@@ -2353,17 +2353,34 @@ async function handleInbound(inbound: Inbound): Promise<void> {
 const SCREENLOG = join(STATE_DIR, 'screenlog.jsonl')
 const SCREENLOG_MAX = 1000
 
+// grammY's InputFile.toJSON throws by design, and JSON.stringify calls toJSON BEFORE any
+// replacer — so a replacer can't save this, the values have to go before serialising. Without
+// it every media send logged as "unserializable payload", blanking the one record of what
+// actually went out (captions, album shape).
+function stripInputFiles(v: unknown, depth = 0): unknown {
+  if (v instanceof InputFile) {
+    return '[InputFile]'
+  }
+  if (v === null || typeof v !== 'object' || depth > 6) {
+    return v
+  }
+  if (Array.isArray(v)) {
+    return v.map(x => stripInputFiles(x, depth + 1))
+  }
+  const out: Record<string, unknown> = {}
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    out[k] = stripInputFiles(val, depth + 1)
+  }
+  return out
+}
+
 function logDebugEvent(e: Record<string, unknown>): void {
   if (!DEBUG_LOG) {
     return // opt-in via TELEGRAM_DEBUG_LOG=1; off by default for the public plugin
   }
   let entry: string
-  // grammY's InputFile throws on JSON.stringify by design, which used to blank out every
-  // media send — and this log is the ground truth for "what actually went out". Swap the
-  // file bodies for a marker so captions and album shape stay readable.
-  const replacer = (_k: string, v: unknown): unknown => (v instanceof InputFile ? '[InputFile]' : v)
   try {
-    entry = JSON.stringify({ ts: new Date().toISOString(), ...e }, replacer)
+    entry = JSON.stringify({ ts: new Date().toISOString(), ...(stripInputFiles(e) as object) })
   } catch (err) {
     entry = JSON.stringify({
       ts: new Date().toISOString(), type: e.type, method: e.method,
