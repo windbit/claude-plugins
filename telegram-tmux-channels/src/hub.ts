@@ -9,7 +9,7 @@ import type { ReactionTypeEmoji } from 'grammy/types'
 import {
   readFileSync, writeFileSync, mkdirSync, rmSync, statSync, realpathSync, chmodSync,
 } from 'fs'
-import { join, extname, sep, basename } from 'path'
+import { join, sep, basename } from 'path'
 import { homedir } from 'os'
 import type { Socket } from 'bun'
 
@@ -20,7 +20,7 @@ import {
 } from './registry'
 import { encode, makeLineDecoder, type StubToHub, type HubToStub, type SessionInfo } from './protocol'
 import { Router } from './router'
-import { chunk, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES, PHOTO_EXTS } from './chunk'
+import { chunk, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES, planAttachments } from './chunk'
 import { mdToHtml } from './md-html'
 import {
   parseOpsCommand, parseCompaction, parseContextPct, parseError, parseWorkflow, paneIsWorking, paneDigest, isHeadlessArgv, sendKeys, typeLine, typeSlashCommand, selectOption, restartSession, stopSession, alive,
@@ -309,11 +309,12 @@ async function doReply(conn: Socket<undefined>, params: Record<string, unknown>)
   }
 
   const chunks = chunk(text, MAX_CHUNK_LIMIT, 'length')
+  const plan = planAttachments(files, chunks)
   // thread on EVERY send — otherwise chunks/files without reply_to land in General
   const threadOpt = target.thread_id != null ? { message_thread_id: target.thread_id } : {}
   const sentIds: number[] = []
   try {
-    for (let i = 0; i < chunks.length; i++) {
+    for (let i = 0; i < (plan.caption ? 0 : chunks.length); i++) {
       const base = {
         ...threadOpt,
         ...(reply_to != null && i === 0 ? { reply_parameters: { message_id: reply_to } } : {}),
@@ -338,15 +339,44 @@ async function doReply(conn: Socket<undefined>, params: Record<string, unknown>)
     }
     throw new Error(`reply failed after ${sentIds.length} of ${chunks.length} chunk(s) sent: ${msg}`)
   }
-  for (const f of files) {
-    const input = new InputFile(f)
-    const opts = {
-      ...threadOpt,
-      ...(reply_to != null ? { reply_parameters: { message_id: reply_to } } : {}),
+  const mediaOpts = {
+    ...threadOpt,
+    ...(reply_to != null ? { reply_parameters: { message_id: reply_to } } : {}),
+  }
+  // the caption belongs to the FIRST attachment only — on an album Telegram shows the first
+  // item's caption as the album's, and repeating it on every item would print it N times
+  let captionLeft = plan.caption
+  const takeCaption = (): { caption: string; parse_mode: 'HTML' | 'MarkdownV2' } | Record<string, never> => {
+    if (!captionLeft) {
+      return {}
     }
-    const sent = PHOTO_EXTS.has(extname(f).toLowerCase())
-      ? await bot.api.sendPhoto(target.chat_id, input, opts)
-      : await bot.api.sendDocument(target.chat_id, input, opts)
+    captionLeft = false
+    return parseMode
+      ? { caption: chunks[0], parse_mode: parseMode }
+      : { caption: mdToHtml(chunks[0]), parse_mode: 'HTML' }
+  }
+
+  for (const batch of plan.photos) {
+    const cap = takeCaption()
+    if (batch.length === 1) {
+      const sent = await bot.api.sendPhoto(target.chat_id, new InputFile(batch[0]), { ...mediaOpts, ...cap })
+      sentIds.push(sent.message_id)
+      continue
+    }
+    const media = batch.map((f, i) => ({ type: 'photo' as const, media: new InputFile(f), ...(i === 0 ? cap : {}) }))
+    // a rejected caption must not sink the whole album — resend it unformatted, like the text path
+    const sent = await bot.api.sendMediaGroup(target.chat_id, media, mediaOpts).catch(e => {
+      if (!('caption' in cap)) {
+        throw e
+      }
+      log(`album caption rejected, retrying plain: ${e}`)
+      const plain = batch.map((f, i) => ({ type: 'photo' as const, media: new InputFile(f), ...(i === 0 ? { caption: chunks[0] } : {}) }))
+      return bot.api.sendMediaGroup(target.chat_id, plain, mediaOpts)
+    })
+    sentIds.push(...sent.map(m => m.message_id))
+  }
+  for (const f of plan.docs) {
+    const sent = await bot.api.sendDocument(target.chat_id, new InputFile(f), { ...mediaOpts, ...takeCaption() })
     sentIds.push(sent.message_id)
   }
   if (params.voice === true) {
