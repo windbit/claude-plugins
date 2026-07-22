@@ -2358,11 +2358,13 @@ function logDebugEvent(e: Record<string, unknown>): void {
     return // opt-in via TELEGRAM_DEBUG_LOG=1; off by default for the public plugin
   }
   let entry: string
+  // grammY's InputFile throws on JSON.stringify by design, which used to blank out every
+  // media send — and this log is the ground truth for "what actually went out". Swap the
+  // file bodies for a marker so captions and album shape stay readable.
+  const replacer = (_k: string, v: unknown): unknown => (v instanceof InputFile ? '[InputFile]' : v)
   try {
-    entry = JSON.stringify({ ts: new Date().toISOString(), ...e })
+    entry = JSON.stringify({ ts: new Date().toISOString(), ...e }, replacer)
   } catch (err) {
-    // grammY's InputFile throws on JSON.stringify by design (media payloads);
-    // log the event shape without the unserializable body — never break the send.
     entry = JSON.stringify({
       ts: new Date().toISOString(), type: e.type, method: e.method,
       error: `unserializable payload: ${err}`,
