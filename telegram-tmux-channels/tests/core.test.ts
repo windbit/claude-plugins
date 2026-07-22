@@ -6,7 +6,7 @@ import { messageKey, keyToTarget, targetFor } from '../src/bindings'
 import { keysForDir, resolveProjectDir, type BindingEntry } from '../src/registry'
 import { makeLineDecoder, encode } from '../src/protocol'
 import { Router } from '../src/router'
-import { chunk } from '../src/chunk'
+import { chunk, planAttachments, CAPTION_LIMIT } from '../src/chunk'
 import { fmtUntil, formatLimits } from '../src/limits'
 import {
   parseOpsCommand, shellQuote, relaunchCommand,
@@ -192,6 +192,33 @@ describe('tmux-ops', () => {
     expect(isHeadlessArgv(['claude', '--dangerously-load-development-channels', 'server:telegram'])).toBe(false)
     // a flag that merely contains "p" is not headless
     expect(isHeadlessArgv(['claude', '--permission-mode', 'plan'])).toBe(false)
+  })
+
+  test('planAttachments: photos album up, caption only when the text really fits one message', () => {
+    // one photo + short text → caption, no separate message
+    const one = planAttachments(['/a/x.png'], ['привет'])
+    expect(one.photos).toEqual([['/a/x.png']])
+    expect(one.caption).toBe(true)
+    // 3 photos → a single album, caption still allowed (rides on the first item)
+    const album = planAttachments(['/a/1.jpg', '/a/2.JPG', '/a/3.webp'], ['подпись'])
+    expect(album.photos).toEqual([['/a/1.jpg', '/a/2.JPG', '/a/3.webp']])
+    expect(album.caption).toBe(true)
+    // >10 photos split into albums of 10 — Telegram rejects a bigger group
+    const many = planAttachments(Array.from({ length: 23 }, (_, i) => `/a/${i}.png`), ['t'])
+    expect(many.photos.map(b => b.length)).toEqual([10, 10, 3])
+    // text past the caption cap stays its own message
+    expect(planAttachments(['/a/x.png'], ['x'.repeat(CAPTION_LIMIT + 1)]).caption).toBe(false)
+    expect(planAttachments(['/a/x.png'], ['x'.repeat(CAPTION_LIMIT)]).caption).toBe(true)
+    // split text can't be a caption either — the tail would be lost
+    expect(planAttachments(['/a/x.png'], ['part1', 'part2']).caption).toBe(false)
+    // no files → nothing to caption
+    expect(planAttachments([], ['hi']).caption).toBe(false)
+    // non-images stay documents and never join an album
+    const mixed = planAttachments(['/a/r.pdf', '/a/p.png'], ['t'])
+    expect(mixed.photos).toEqual([['/a/p.png']])
+    expect(mixed.docs).toEqual(['/a/r.pdf'])
+    // a dotless file is a document, not a photo
+    expect(planAttachments(['/a/README'], ['t']).docs).toEqual(['/a/README'])
   })
 
   test('isClaudeArgv: a bare /cli.js is not claude — that mistook Playwright for a live session', () => {

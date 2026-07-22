@@ -216,7 +216,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'reply',
       description:
-        'Reply on Telegram. Copy chat_id and thread_id (topic_id) from the inbound message tag; with a single binding both may be omitted. Optionally pass reply_to (message_id) for threading, files (absolute paths) to attach, or voice:true to also speak text as a voice note.',
+        'Reply on Telegram. Copy chat_id and thread_id (topic_id) from the inbound message tag; with a single binding both may be omitted. Optionally pass reply_to (message_id) for threading, files (absolute paths) to attach — several images go out as one album, and a short text rides along as their caption — or voice:true to also speak text as a voice note.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -227,7 +227,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           files: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Absolute file paths. Images send as photos; other types as documents. Max 50MB each.',
+            description:
+              'Absolute file paths. Images send as photos, 2+ of them as one album (batched by 10); other types as documents. ' +
+              'Max 50MB each. With attachments a short text (≤1024 chars) becomes the caption — one message, no separate text; ' +
+              'longer text is sent on its own as before.',
           },
           voice: {
             type: 'boolean',
