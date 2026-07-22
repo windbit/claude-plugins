@@ -194,6 +194,21 @@ describe('tmux-ops', () => {
     expect(isHeadlessArgv(['claude', '--permission-mode', 'plan'])).toBe(false)
   })
 
+  test('isClaudeArgv: a bare /cli.js is not claude — that mistook Playwright for a live session', () => {
+    // prod: /resume refused with "в этой папке уже работает claude (pid 12442, 14340)" — those
+    // were @playwright/test MCP servers sharing the project cwd, so the binding couldn't revive
+    expect(isClaudeArgv([
+      'node', '/home/user/projects/agentek-console/node_modules/@playwright/test/cli.js', 'run-test-mcp-server',
+    ])).toBe(false)
+    expect(isClaudeArgv(['node', '/app/node_modules/vitest/cli.js'])).toBe(false)
+    // real claude launch forms must still be recognised
+    expect(isClaudeArgv(['claude', '--resume', 'abc'])).toBe(true)
+    expect(isClaudeArgv(['/home/user/.local/bin/claude'])).toBe(true)
+    expect(isClaudeArgv(['node', '/home/user/.claude/local/node_modules/@anthropic-ai/claude-code/cli.js'])).toBe(true)
+    // a project folder merely named "claude-*" must not make someone else's cli.js claude
+    expect(isClaudeArgv(['node', '/home/user/projects/claude-tools/node_modules/@playwright/test/cli.js'])).toBe(false)
+  })
+
   test('paneDigest: strips box-drawing/blank noise, keeps recent content + bottom', () => {
     // shape of a real Claude TUI capture: content, blank padding, the input-box border runs,
     // then the live footer (permission-mode + token line).
