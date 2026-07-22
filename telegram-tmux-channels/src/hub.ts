@@ -29,7 +29,7 @@ import {
 } from './tmux-ops'
 import { ansiToHtml } from './ansi-html'
 import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, tgDescription, type Skill } from './skills'
-import { claudePidsInDir } from './proc'
+import { claudePidsInDir, cmdlineOf } from './proc'
 import { readLimits, formatLimits } from './limits'
 import { rmQuiet } from './util'
 import { parsePicker, checkedIndexes, parseResumeList, fnv1a, type Picker, type ResumeRow } from './picker'
@@ -1674,10 +1674,26 @@ function trackedPids(): Set<number> {
   return out
 }
 
-// claude processes in `dir` the hub doesn't already track (mode: shared siblings don't count)
-function foreignPidsInDir(dir: string): number[] {
+// Untracked claude processes that would FORK this binding's conversation — i.e. ones already
+// holding its sessionId. A foreign claude working in the same folder on a different session is
+// no conflict, and without a sessionId we spawn fresh, so there's nothing to fork either.
+// Narrow on purpose: this refuses a revive, and a dead binding has nowhere else to go.
+function forkRiskPids(binding: BindingEntry): number[] {
+  const sid = binding.sessionId
+  if (!sid) {
+    return []
+  }
   const tracked = trackedPids()
-  return claudePidsInDir(dir).filter(pid => !tracked.has(pid))
+  return claudePidsInDir(binding.dir).filter(pid => {
+    if (tracked.has(pid)) {
+      return false
+    }
+    try {
+      return cmdlineOf(pid).includes(sid)
+    } catch {
+      return false // vanished mid-scan
+    }
+  })
 }
 
 // /screen → PNG: capture-pane -e → свой ANSI→HTML → headless chrome --screenshot.
@@ -2693,11 +2709,11 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     void say(`⚙️ Сессия уже подключена <i>(${session?.pane ? `<code>${escHtml(session.pane)}</code>` : 'не в tmux'})</i>.\n\nИспользуй <code>/restart</code> или <code>/compact</code>.`)
     return
   }
-  const foreign = foreignPidsInDir(binding.dir)
+  const foreign = forkRiskPids(binding)
   if (foreign.length > 0) {
     void say(
-      `⚠️ <b>В этой папке уже работает claude</b> <i>(pid ${foreign.join(', ')})</i>, но без каналов — ` +
-        `хаб им не управляет.\n\nВторую не поднимаю: <code>/resume</code> форкнул бы её беседу. ` +
+      `⚠️ <b>Эту беседу уже ведёт claude вне хаба</b> <i>(pid ${foreign.join(', ')})</i> — ` +
+        `хаб им не управляет.\n\nНе поднимаю вторую: <code>/resume</code> форкнул бы её. ` +
         `Закрой ту сессию (или перезапусти её с dev-каналом) и повтори.`,
     )
     return

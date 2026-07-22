@@ -75,9 +75,14 @@ export function claudePids(): number[] {
   return out ? out.split('\n').map(Number).filter(Boolean) : []
 }
 
+// npm-installed claude runs as `node .../@anthropic-ai/claude-code/cli.js`, so cli.js has to
+// count — but only when its own package dir is claude's. Plain `/cli.js` matched half the npm
+// ecosystem (@playwright/test/cli.js among them) and got Playwright mistaken for a live session.
+const CLAUDE_CLI_JS = /\/claude[^/]*\/cli\.js$/
+
 export function isClaudeArgv(argv: string[]): boolean {
   return argv.some(
-    a => a === 'claude' || a.endsWith('/claude') || a.endsWith('/cli.js') || a.endsWith('\\claude.exe'),
+    a => a === 'claude' || a.endsWith('/claude') || CLAUDE_CLI_JS.test(a) || a.endsWith('\\claude.exe'),
   )
 }
 
