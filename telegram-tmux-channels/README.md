@@ -102,8 +102,9 @@ a platform limitation, not a plugin one.) The hub autospawns on the first stub c
 - **Idle-unload** — with `TELEGRAM_IDLE_UNLOAD_MINUTES` > 0, a session with no activity (no
   message, no pane movement, not mid-turn/subagent/workflow) for that many minutes is gracefully
   stopped to free RAM (a claude session + its MCP children is ~0.5 GB); the next inbound message
-  auto-resumes it via the normal revive path (`--resume`, full history). One silent message on
-  suspend, one on wake. `/pin`ned bindings are never touched. `0`/unset disables it (default), so
+  auto-resumes it via the normal revive path (`--resume`, full history). No suspend message (a new
+  message would mark the topic unread); one silent line on wake, state also in `/status` and the
+  dashboard. `/pin`ned bindings are never touched. `0`/unset disables it (default), so
   the public plugin never stops anyone's sessions.
 - `/stand_up`, `/stand_down` — raise / tear down this folder's dev stand via hooks in the
   project's own `.tmux-channels.json` (see below); the hook's `internal=…`/`external=…` output lines

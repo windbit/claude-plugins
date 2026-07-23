@@ -1541,14 +1541,8 @@ async function maybeIdleUnload(s: SessionInfo & { pane: string }, working: boole
   expectedDisconnect.add(key) // so the stub close isn't reported as a 💀 death
   const ok = await stopSession(s.pane, s.pid, log).catch(() => false)
   if (ok) {
-    // announce only on a real stop — otherwise the topic would claim "suspended" while alive
-    const t = keyToTarget(key)
-    void bot.api
-      .sendMessage(t.chat_id, '⏸ <b>Сессия приостановлена</b> <i>(простой)</i> — вернётся на следующее сообщение.', {
-        ...(t.thread_id != null ? { message_thread_id: t.thread_id } : {}),
-        parse_mode: 'HTML', disable_notification: true,
-      })
-      .catch(() => {})
+    // no suspend message by design (any new message marks the topic unread) — only the wake
+    // line is sent, on revive. State stays visible in /status and on the dashboard.
     for (const k of keys) {
       lastActivity.delete(k)
       idleUnloaded.add(k)
