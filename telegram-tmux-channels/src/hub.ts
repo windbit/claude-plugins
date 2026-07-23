@@ -1990,7 +1990,13 @@ async function teardownBinding(key: string, binding: BindingEntry): Promise<stri
   const reg = loadBindings()
   delete reg[key]
   saveBindings(reg)
-  let note = `🔓 <b>Отвязано</b> <i>(было ${codePath(binding.dir)})</i>`
+  // Отчёт уходит в General (топика уже нет) — поэтому он обязан сам называть, что снесли:
+  // топик (id + имя, если знаем), папку и id беседы, иначе в общей ленте не разобрать.
+  const tid = keyToTarget(key).thread_id
+  let note =
+    `🔓 <b>Отвязано</b>${tid != null ? ` — топик <code>#${tid}</code>` : ''}` +
+    `${binding.title ? ` «${escHtml(binding.title)}»` : ''}\n📁 ${codePath(binding.dir)}` +
+    `${binding.sessionId ? `\n💬 Сессия <code>${escHtml(binding.sessionId)}</code>` : ''}`
   // The hub created this tmux session (spawnSession) — it owns tearing it down, any mode.
   const name = sessionName(key, binding.dir)
   if (await hasTmuxSession(name)) {
@@ -2106,7 +2112,7 @@ function beginTopicSession(
     pendingTopics.set(key, { cfg, mode, topicName, say })
     return
   }
-  void runAutoTopic(key, cfg, cfg.dir, mode, slugFromTopicName(topicName), say)
+  void runAutoTopic(key, cfg, cfg.dir, mode, slugFromTopicName(topicName), topicName, say)
 }
 
 async function runAutoTopic(
@@ -2115,6 +2121,7 @@ async function runAutoTopic(
   dir: string,
   mode: TrustedGroupMode,
   branch: string,
+  title: string,
   say: (html: string) => void,
 ): Promise<void> {
   const branchNote = mode === 'folder' ? '' : `, ветка <code>${escHtml(branch)}</code>`
@@ -2124,6 +2131,8 @@ async function runAutoTopic(
     const reg = loadBindings()
     reg[key] = {
       dir: resolvedDir,
+      // late-binding doesn't know the real name (no topic update) — don't store its "topic-<id>" stub
+      ...(/^topic-\d+$/.test(title) ? {} : { title }),
       ...(cfg.cmdline ? { cmdline: cfg.cmdline } : {}),
       ...(mode === 'worktree' && cfg.hook ? { hookBranch: branch } : {}),
     }
@@ -2235,7 +2244,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
       return
     }
     pendingTopics.delete(key)
-    await runAutoTopic(key, pendingTopic.cfg, dir, pendingTopic.mode, slugFromTopicName(pendingTopic.topicName), pendingTopic.say)
+    await runAutoTopic(key, pendingTopic.cfg, dir, pendingTopic.mode, slugFromTopicName(pendingTopic.topicName), pendingTopic.topicName, pendingTopic.say)
     return
   }
 
@@ -2492,11 +2501,13 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         void say('❌ <code>/delete</code> — только в топике форума (General/обычную группу так не удалить).')
         return
       }
-      const note = binding ? await teardownBinding(key, binding) : '🔓 <i>Бинда тут не было.</i>'
+      const note = binding
+        ? await teardownBinding(key, binding)
+        : `🔓 <i>Бинда в топике <code>#${threadId}</code> не было.</i>`
       let delNote: string
       try {
         await bot.api.deleteForumTopic(chat_id, threadId)
-        delNote = '🗑 Топик удалён.'
+        delNote = `🗑 Топик <code>#${threadId}</code> удалён.`
       } catch (e) {
         delNote = `⚠️ Топик не удалён (у бота есть право can_delete_messages?): ${escHtml(e instanceof Error ? e.message : String(e))}`
       }
