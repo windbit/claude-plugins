@@ -14,6 +14,7 @@ export type BindingEntry = {
   cmdline?: string[]
   sessionId?: string // claude conversation id — --resume target when this binding's dir is shared
   hookBranch?: string // set for auto-topic worktree bindings created via a group hook — /unbind runs hook.delete on this
+  pinned?: boolean // /pin — never idle-unload this binding (see TELEGRAM_IDLE_UNLOAD_MINUTES)
 }
 
 export function loadBindings(): Record<string, BindingEntry> {

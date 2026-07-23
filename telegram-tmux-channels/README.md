@@ -98,6 +98,13 @@ a platform limitation, not a plugin one.) The hub autospawns on the first stub c
   conversation of this folder — no picker, works with tmux down too (a live session is stopped
   first, so `--resume` can't fork it); `/new` — a fresh one; the hub creates the tmux session
   (named after the folder) and clicks through the startup prompts (folder trust, dev warning).
+- `/pin`, `/unpin` — exempt this topic's session from idle-unload (below), or re-allow it.
+- **Idle-unload** — with `TELEGRAM_IDLE_UNLOAD_MINUTES` > 0, a session with no activity (no
+  message, no pane movement, not mid-turn/subagent/workflow) for that many minutes is gracefully
+  stopped to free RAM (a claude session + its MCP children is ~0.5 GB); the next inbound message
+  auto-resumes it via the normal revive path (`--resume`, full history). One silent message on
+  suspend, one on wake. `/pin`ned bindings are never touched. `0`/unset disables it (default), so
+  the public plugin never stops anyone's sessions.
 - `/stand_up`, `/stand_down` — raise / tear down this folder's dev stand via hooks in the
   project's own `.tmux-channels.json` (see below); the hook's `internal=…`/`external=…` output lines
   become the links echoed back, the rest is shown as a log tail. No `.tmux-channels.json` → no stand.
@@ -125,6 +132,7 @@ a platform limitation, not a plugin one.) The hub autospawns on the first stub c
 | `TELEGRAM_HUB_AUTOSPAWN` | `1` | `0` disables autospawn (for a service-only install) |
 | `TELEGRAM_CONTEXT_WARN_PCT` | `80` | append `⚠️ Контекст: NN%` under an agent's text reply once its context-window usage reaches this %; `0` disables |
 | `TELEGRAM_DEBUG_LOG` | `0` | `1` enables the debug log (`screenlog.jsonl`, all hub traffic); off by default |
+| `TELEGRAM_IDLE_UNLOAD_MINUTES` | `0` | idle minutes before a session is stopped (auto-resumes on next message); `0`/unset disables. `/pin` exempts a topic |
 | `OPENAI_API_KEY` | — | enables voice (STT + TTS); unset = voice silently disabled |
 | `STT_OPENAI_MODEL` | `gpt-4o-transcribe` | transcription model for incoming voice notes |
 | `STT_OPENAI_BASE_URL` | `https://api.openai.com/v1` | override for an OpenAI-compatible endpoint |

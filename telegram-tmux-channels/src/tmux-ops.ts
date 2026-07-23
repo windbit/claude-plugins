@@ -4,12 +4,12 @@
 export type OpsCommand =
   | 'compact' | 'clear' | 'esc' | 'enter' | 'restart' | 'resume' | 'new' | 'status'
   | 'bind' | 'unbind' | 'allow' | 'model' | 'stop' | 'screen' | 'last' | 'delete' | 'skills' | 'reload'
-  | 'stand_up' | 'stand_down'
+  | 'stand_up' | 'stand_down' | 'pin' | 'unpin'
 
 export function parseOpsCommand(
   text: string,
 ): { cmd: OpsCommand; bot?: string; arg?: string } | undefined {
-  const m = /^\/(compact|clear|esc|enter|restart|resume|new|status|bind|unbind|allow|model|stop|screen|last|delete|skills|reload|stand_up|stand_down)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
+  const m = /^\/(compact|clear|esc|enter|restart|resume|new|status|bind|unbind|allow|model|stop|screen|last|delete|skills|reload|stand_up|stand_down|pin|unpin)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
     text.trim(),
   )
   if (!m) {
@@ -107,6 +107,14 @@ export function parseWorkflow(text: string): { name: string; done: number; total
     }
   }
   return undefined
+}
+
+// Idle-unload decision: is this binding idle enough to stop? False while working, for a
+// pinned binding, or before the threshold. thresholdMs<=0 disables. Pure — tested in core.test.ts.
+export function isIdleToUnload(
+  now: number, lastActive: number, thresholdMs: number, pinned: boolean, working: boolean,
+): boolean {
+  return thresholdMs > 0 && !pinned && !working && now - lastActive >= thresholdMs
 }
 
 export function shellQuote(args: string[]): string {

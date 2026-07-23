@@ -24,7 +24,7 @@ import { chunk, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES, planAttachments } from '.
 import { mdToHtml } from './md-html'
 import {
   parseOpsCommand, parseCompaction, parseContextPct, parseError, parseWorkflow, paneIsWorking, paneDigest, isHeadlessArgv, sendKeys, typeLine, typeSlashCommand, selectOption, restartSession, stopSession, alive,
-  hasTmuxSession, ensureTmuxSession, killTmuxSession, buildLaunch, shellQuote,
+  hasTmuxSession, ensureTmuxSession, killTmuxSession, buildLaunch, shellQuote, isIdleToUnload,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
 import { ansiToHtml } from './ansi-html'
@@ -140,6 +140,27 @@ const CONTEXT_WARN_PCT = (() => {
 // Debug log (screenlog.jsonl) writes ALL Telegram traffic to disk — a dev aid, off by default
 // so the public plugin doesn't log everyone's messages. Enable with TELEGRAM_DEBUG_LOG=1.
 const DEBUG_LOG = /^(1|true|yes|on)$/i.test(process.env.TELEGRAM_DEBUG_LOG ?? '')
+
+// Idle-unload: after N minutes of no activity a session is gracefully stopped (RAM back;
+// a claude session + its MCP children is ~0.5 GB), and the next message auto-resumes it via
+// the existing revive path. One knob — TELEGRAM_IDLE_UNLOAD_MINUTES; 0/unset = disabled.
+// /pin exempts a topic. Off by default so the public plugin never touches anyone's sessions.
+const IDLE_UNLOAD_MS = (() => {
+  const n = Number(process.env.TELEGRAM_IDLE_UNLOAD_MINUTES ?? '0')
+  return Number.isFinite(n) && n > 0 ? n * 60_000 : 0
+})()
+// key → last time this binding showed activity (inbound msg or any pane movement). The idle
+// timer measures from here; a live session with no entry is treated as "just active" (now).
+const lastActivity = new Map<string, number>()
+const unloading = new Set<string>() // guards against re-triggering while a stop is in flight
+const idleUnloaded = new Set<string>() // was suspended by idle-unload → wake gets one quiet msg
+function markActivity(keys: string[] | undefined): void {
+  const now = Date.now()
+  for (const k of keys ?? []) {
+    lastActivity.set(k, now)
+    idleUnloaded.delete(k)
+  }
+}
 
 // kill a zombie poller (incl. the old plugin) — one getUpdates per token
 mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
@@ -925,6 +946,8 @@ const OPS_COMMANDS: { command: string; description: string }[] = [
   { command: 'skills', description: 'Проектные скиллы этой сессии (кнопками)' },
   { command: 'stand_up', description: 'Поднять стенд этой папки (хук из .tmux-channels.json)' },
   { command: 'stand_down', description: 'Погасить стенд этой папки' },
+  { command: 'pin', description: 'Не выгружать эту сессию по простою' },
+  { command: 'unpin', description: 'Разрешить выгрузку по простою' },
   { command: 'reload', description: 'Пересканировать скиллы плагинов → команды' },
   { command: 'compact', description: 'Отправить /compact в сессию' },
   { command: 'clear', description: 'Очистить историю сессии' },
@@ -1458,6 +1481,19 @@ async function pollScreens(): Promise<void> {
       return { s, text }
     }),
   )
+  // Activity + idle-unload. Any pane movement or busy state = activity (covers agent output,
+  // not just user input). A truly quiet, unpinned session past the threshold is stopped; the
+  // next inbound message revives it (handleInbound). Guarded so we never stop a working pane.
+  for (const { s, text } of captured) {
+    const busy = s.bindingKeys?.some(k => [...(activeSubagents.get(k)?.values() ?? [])].some(a => !a.done)) ?? false
+    const working = busy || paneIsWorking(text) || !!parseWorkflow(text)
+    if (working) {
+      markActivity(s.bindingKeys)
+    }
+    if (IDLE_UNLOAD_MS > 0) {
+      void maybeIdleUnload(s, working)
+    }
+  }
   for (const pane of [...activePickers.keys()]) if (!seen.has(pane)) disarmPicker(pane)
   for (const pane of [...lastPaneText.keys()]) if (!seen.has(pane)) lastPaneText.delete(pane)
   for (const pane of [...autoAcked.keys()]) if (!seen.has(pane)) autoAcked.delete(pane)
@@ -1484,6 +1520,46 @@ async function pollScreens(): Promise<void> {
   detectorsRunning = false
 }
 setInterval(() => void pollScreens(), SCREEN_POLL_MS)
+
+// Stop a quiet, unpinned, past-threshold session; the next inbound message revives it.
+async function maybeIdleUnload(s: SessionInfo & { pane: string }, working: boolean): Promise<void> {
+  const keys = s.bindingKeys ?? []
+  const reg = loadBindings()
+  if (keys.length === 0 || keys.some(k => reg[k]?.pinned)) {
+    return // pinned binding on this session → never unload
+  }
+  const now = Date.now()
+  const lastActive = Math.max(...keys.map(k => lastActivity.get(k) ?? now))
+  const key = keys[0]
+  if (unloading.has(key) || !isIdleToUnload(now, lastActive, IDLE_UNLOAD_MS, false, working)) {
+    return
+  }
+  if (!s.pid) {
+    return // can't stop what we can't signal
+  }
+  unloading.add(key)
+  expectedDisconnect.add(key) // so the stub close isn't reported as a 💀 death
+  const ok = await stopSession(s.pane, s.pid, log).catch(() => false)
+  if (ok) {
+    // announce only on a real stop — otherwise the topic would claim "suspended" while alive
+    const t = keyToTarget(key)
+    void bot.api
+      .sendMessage(t.chat_id, '⏸ <b>Сессия приостановлена</b> <i>(простой)</i> — вернётся на следующее сообщение.', {
+        ...(t.thread_id != null ? { message_thread_id: t.thread_id } : {}),
+        parse_mode: 'HTML', disable_notification: true,
+      })
+      .catch(() => {})
+    for (const k of keys) {
+      lastActivity.delete(k)
+      idleUnloaded.add(k)
+    }
+  } else {
+    markActivity(keys) // stop failed (busy/picker open) → treat as active, retry after another idle window
+  }
+  log(`idle-unload: ${key} (${s.cwd}) stopped=${ok}`)
+  setTimeout(() => expectedDisconnect.delete(key), 90_000)
+  unloading.delete(key)
+}
 
 async function handlePickCallback(
   ctx: Context,
@@ -1605,6 +1681,7 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
   if (msg.op === 'subscribe') {
     const session = verifyClaimedKeys(msg.session)
     router.subscribe(sock, session)
+    markActivity(session.bindingKeys) // fresh session = active now; starts the idle clock
     learnCmdline(session)
     log(`subscribe: cwd=${session.cwd ?? '-'} pane=${session.pane ?? '-'}`)
     return
@@ -2313,10 +2390,21 @@ async function handleInbound(inbound: Inbound): Promise<void> {
     log(`drop (not allowed): key=${key} from=${senderId}`)
     return
   }
+  const wasIdle = idleUnloaded.has(key) // capture BEFORE markActivity clears it
+  markActivity([key]) // an inbound message is activity — resets the idle clock
   let conns = connsForBinding(key, binding.dir)
   if (conns.length === 0) {
     log(`reviving: key=${key} dir=${binding.dir} — no live session for an inbound message`)
-    await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', say)
+    // Idle-unloaded sessions wake with ONE quiet line (no spawnSession chatter); a genuine
+    // cold revive keeps the normal verbose say so the user sees what's happening.
+    if (wasIdle) {
+      void bot.api
+        .sendMessage(chat_id, '▶️ <b>Поднимаю сессию…</b>', {
+          ...(threadId != null ? { message_thread_id: threadId } : {}), parse_mode: 'HTML', disable_notification: true,
+        })
+        .catch(() => {})
+    }
+    await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', wasIdle ? () => {} : say)
     conns = await waitForBinding(key, 30_000)
     if (conns.length === 0) {
       say('⚠️ Сессия не подключилась вовремя — сообщение не доставлено, попробуй ещё раз.')
@@ -2501,6 +2589,31 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     return
   }
 
+  if (cmd === 'pin' || cmd === 'unpin') {
+    if (!isAdmin(senderId)) {
+      return
+    }
+    if (!binding) {
+      void say('⚠️ Тут нет привязки — сначала <code>/bind</code>.')
+      return
+    }
+    reg[key].pinned = cmd === 'pin'
+    if (!reg[key].pinned) {
+      delete reg[key].pinned
+    }
+    saveBindings(reg)
+    if (cmd === 'pin') {
+      markActivity([key]) // снять «просроченный» таймер, чтобы не выгрузилось сразу после /unpin→/pin
+    }
+    const on = IDLE_UNLOAD_MS > 0
+    void say(
+      cmd === 'pin'
+        ? `📌 <b>Закреплено</b> — эта сессия не выгружается по простою.${on ? '' : '\n<i>(авто-выгрузка сейчас выключена — TELEGRAM_IDLE_UNLOAD_MINUTES=0)</i>'}`
+        : `📌 <b>Откреплено</b> — сессия снова выгружается по простою${on ? ` (через ${Math.round(IDLE_UNLOAD_MS / 60_000)} мин)` : ' <i>(когда включат авто-выгрузку)</i>'}.`,
+    )
+    return
+  }
+
   if (cmd === 'bind' || cmd === 'unbind' || cmd === 'allow' || cmd === 'delete') {
     if (!isAdmin(senderId)) {
       return
@@ -2673,6 +2786,11 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       const name = sessionName(key, binding.dir)
       const tmuxState = (await hasTmuxSession(name)) ? 'есть' : 'нет сессии'
       lines.push(`🪟 tmux <code>${escHtml(name)}</code>: ${tmuxState}`, '', '→ <code>/resume</code> чтобы поднять')
+    }
+    if (binding.pinned) {
+      lines.push('', '📌 закреплена — не выгружается по простою')
+    } else if (IDLE_UNLOAD_MS > 0) {
+      lines.push('', `💤 выгрузка по простою через ${Math.round(IDLE_UNLOAD_MS / 60_000)} мин (<code>/pin</code> чтобы держать)`)
     }
     // Стенд — только если проект вообще умеет его щупать (`.tmux-channels.json` → stand.status).
     const stand = await runStandCommand(binding.dir, 'status')
