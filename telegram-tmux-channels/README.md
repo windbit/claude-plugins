@@ -32,7 +32,10 @@ A fork of the official `telegram@claude-plugins-official`.
   `TaskUpdate` todo list (📋 Задачи), and `Skill` tool calls. Finished items keep a ✅ rather
   than disappearing — the message is the turn's history, not just a live snapshot.
 - State lives in `~/.claude/channels/telegram/`: `.env` (token + `TELEGRAM_ADMINS`, not in git),
-  `bindings.json` (hub-managed, hot-reloaded).
+  `bindings.json` (hub-managed, hot-reloaded), `known-chats.json` — every chat the bot has seen
+  with its forum topics (`topics: {<threadId>: {title?}}`), so a chat/topic id is one `cat` away.
+  Titles track renames; a topic first seen through a plain message is id-only until it's created
+  or renamed under the hub's nose (the Bot API can't look a topic name up on demand).
 - **Debug log** — dev opt-in, **off by default** (enable with `TELEGRAM_DEBUG_LOG=1`; the public
   plugin doesn't log anyone's traffic). When on, `~/.claude/channels/telegram/screenlog.jsonl` is
   one correlated timeline of everything through the hub: entry types `screen` (pane snapshots),

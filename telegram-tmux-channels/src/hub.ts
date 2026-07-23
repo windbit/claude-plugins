@@ -41,7 +41,7 @@ import {
 import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree } from './dir-resolve'
 import { jsonlMtimes, captureNewSessionId, recentSessions, lastAssistantText, newestJsonlSize } from './session-id'
 import { HubStateRepository, type PersistedPicker } from './state-repo'
-import { recordChat, chatLabel } from './known-chats'
+import { recordChat, recordTopic, topicTitle, chatLabel } from './known-chats'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
 
@@ -1992,10 +1992,11 @@ async function teardownBinding(key: string, binding: BindingEntry): Promise<stri
   saveBindings(reg)
   // Отчёт уходит в General (топика уже нет) — поэтому он обязан сам называть, что снесли:
   // топик (id + имя, если знаем), папку и id беседы, иначе в общей ленте не разобрать.
-  const tid = keyToTarget(key).thread_id
+  const { chat_id: chatId, thread_id: tid } = keyToTarget(key)
+  const topic = tid != null ? topicTitle(chatId, tid) : undefined
   let note =
     `🔓 <b>Отвязано</b>${tid != null ? ` — топик <code>#${tid}</code>` : ''}` +
-    `${binding.title ? ` «${escHtml(binding.title)}»` : ''}\n📁 ${codePath(binding.dir)}` +
+    `${topic ? ` «${escHtml(topic)}»` : ''}\n📁 ${codePath(binding.dir)}` +
     `${binding.sessionId ? `\n💬 Сессия <code>${escHtml(binding.sessionId)}</code>` : ''}`
   // The hub created this tmux session (spawnSession) — it owns tearing it down, any mode.
   const name = sessionName(key, binding.dir)
@@ -2112,7 +2113,7 @@ function beginTopicSession(
     pendingTopics.set(key, { cfg, mode, topicName, say })
     return
   }
-  void runAutoTopic(key, cfg, cfg.dir, mode, slugFromTopicName(topicName), topicName, say)
+  void runAutoTopic(key, cfg, cfg.dir, mode, slugFromTopicName(topicName), say)
 }
 
 async function runAutoTopic(
@@ -2121,7 +2122,6 @@ async function runAutoTopic(
   dir: string,
   mode: TrustedGroupMode,
   branch: string,
-  title: string,
   say: (html: string) => void,
 ): Promise<void> {
   const branchNote = mode === 'folder' ? '' : `, ветка <code>${escHtml(branch)}</code>`
@@ -2131,8 +2131,6 @@ async function runAutoTopic(
     const reg = loadBindings()
     reg[key] = {
       dir: resolvedDir,
-      // late-binding doesn't know the real name (no topic update) — don't store its "topic-<id>" stub
-      ...(/^topic-\d+$/.test(title) ? {} : { title }),
       ...(cfg.cmdline ? { cmdline: cfg.cmdline } : {}),
       ...(mode === 'worktree' && cfg.hook ? { hookBranch: branch } : {}),
     }
@@ -2212,7 +2210,11 @@ async function handleInbound(inbound: Inbound): Promise<void> {
   const msgId = ctx.message?.message_id
   const threadId = ctx.message?.message_thread_id
   const key = messageKey({ chatType: chat.type, chatId: chat_id, threadId })
-  recordChat(chat_id, chat.type, chatLabel(chat), new Date().toISOString())
+  const seenAt = new Date().toISOString()
+  recordChat(chat_id, chat.type, chatLabel(chat), seenAt)
+  if (threadId != null) {
+    recordTopic(chat_id, threadId, undefined, seenAt)
+  }
   const say = (html: string) =>
     void bot.api
       .sendMessage(chat_id, html, { ...(threadId != null ? { message_thread_id: threadId } : {}), parse_mode: 'HTML' })
@@ -2244,7 +2246,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
       return
     }
     pendingTopics.delete(key)
-    await runAutoTopic(key, pendingTopic.cfg, dir, pendingTopic.mode, slugFromTopicName(pendingTopic.topicName), pendingTopic.topicName, pendingTopic.say)
+    await runAutoTopic(key, pendingTopic.cfg, dir, pendingTopic.mode, slugFromTopicName(pendingTopic.topicName), pendingTopic.say)
     return
   }
 
@@ -2503,7 +2505,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       }
       const note = binding
         ? await teardownBinding(key, binding)
-        : `🔓 <i>Бинда в топике <code>#${threadId}</code> не было.</i>`
+        : `🔓 <i>Бинда в топике <code>#${threadId}</code>${topicTitle(chat_id, threadId) ? ` «${escHtml(topicTitle(chat_id, threadId)!)}»` : ''} не было.</i>`
       let delNote: string
       try {
         await bot.api.deleteForumTopic(chat_id, threadId)
@@ -2860,6 +2862,7 @@ bot.on('message:forum_topic_created', ctx => {
   }
   const threadId = ctx.message.message_thread_id ?? ctx.message.message_id
   const topicName = ctx.message.forum_topic_created.name
+  recordTopic(chat_id, threadId, topicName, new Date().toISOString())
   if (isExcludedTopic(cfg, threadId, topicName)) {
     return
   }
@@ -2879,6 +2882,20 @@ bot.on('message:forum_topic_created', ctx => {
       reply_markup: modeKeyboard(key, cfg),
     })
     .catch(() => {})
+})
+
+// renames — group title arrives as a service message, a topic's only ever here
+bot.on('message:new_chat_title', ctx => {
+  recordChat(String(ctx.chat.id), ctx.chat.type, ctx.message.new_chat_title, new Date().toISOString())
+})
+
+bot.on('message:forum_topic_edited', ctx => {
+  const threadId = ctx.message.message_thread_id
+  const name = ctx.message.forum_topic_edited.name
+  if (threadId == null || !name) {
+    return // icon-only edit
+  }
+  recordTopic(String(ctx.chat.id), threadId, name, new Date().toISOString())
 })
 
 bot.on('message:text', async ctx => handleInbound({ ctx, text: ctx.message.text }))

@@ -7,7 +7,17 @@ import { safeJsonParse } from './util'
 
 export const KNOWN_CHATS_FILE = join(STATE_DIR, 'known-chats.json')
 
-export type KnownChat = { type: string; title: string; firstSeen: string; lastSeen: string }
+// Topic titles come only from updates (created/edited) — the Bot API can't look one up
+// later. A topic first seen through a plain message is recorded id-only, until it's renamed.
+export type KnownTopic = { title?: string; firstSeen: string; lastSeen: string }
+
+export type KnownChat = {
+  type: string
+  title: string
+  firstSeen: string
+  lastSeen: string
+  topics?: Record<string, KnownTopic>
+}
 
 export function loadKnownChats(): Record<string, KnownChat> {
   let raw: string
@@ -38,6 +48,41 @@ export function recordChat(chatId: string, type: string, title: string, now: str
   if (existing && existing.title === title && existing.type === type) {
     return
   }
-  reg[chatId] = { type, title, firstSeen: existing?.firstSeen ?? now, lastSeen: now }
+  reg[chatId] = { ...existing, type, title, firstSeen: existing?.firstSeen ?? now, lastSeen: now }
   saveKnownChats(reg)
+}
+
+// Same write-on-change rule as recordChat. `title` undefined = "seen it, name unknown":
+// never overwrites a name we already learned from a created/edited update. Returns
+// undefined when nothing changed (→ no write). Pure — tested in known-chats.test.ts.
+export function mergeTopic(
+  existing: KnownTopic | undefined,
+  title: string | undefined,
+  now: string,
+): KnownTopic | undefined {
+  if (existing && (title === undefined || existing.title === title)) {
+    return undefined
+  }
+  const kept = title ?? existing?.title
+  return { ...(kept ? { title: kept } : {}), firstSeen: existing?.firstSeen ?? now, lastSeen: now }
+}
+
+export function recordTopic(chatId: string, threadId: number, title: string | undefined, now: string): void {
+  const reg = loadKnownChats()
+  const chat = reg[chatId]
+  if (!chat) {
+    return // recordChat runs first on every path that knows the chat
+  }
+  const topics = chat.topics ?? {}
+  const merged = mergeTopic(topics[String(threadId)], title, now)
+  if (!merged) {
+    return
+  }
+  topics[String(threadId)] = merged
+  reg[chatId] = { ...chat, topics }
+  saveKnownChats(reg)
+}
+
+export function topicTitle(chatId: string, threadId: number): string | undefined {
+  return loadKnownChats()[chatId]?.topics?.[String(threadId)]?.title
 }

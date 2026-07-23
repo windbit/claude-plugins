@@ -13,7 +13,6 @@ export type BindingEntry = {
   allow?: string[]
   cmdline?: string[]
   sessionId?: string // claude conversation id — --resume target when this binding's dir is shared
-  title?: string // forum topic name, known only at auto-creation — Bot API can't look it up later
   hookBranch?: string // set for auto-topic worktree bindings created via a group hook — /unbind runs hook.delete on this
 }
 
