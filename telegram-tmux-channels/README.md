@@ -77,15 +77,18 @@ a platform limitation, not a plugin one.) The hub autospawns on the first stub c
   default `~/projects`, or an absolute path/`~/…`); `/unbind` also kills the tmux session the
   hub created for this binding (in `worktree` mode, after any configured delete hook runs);
   `/allow <id …>`.
-- **Trusted groups** — a group can be configured (`trusted-groups.json`) to auto-bind any new
-  forum topic without `/bind`, in `folder` mode (shared project dir) or `worktree` mode (its
-  own git worktree + branch per topic, with a `{create, delete}` shell-command hook, e.g.
-  `wt.py`). Cyrillic topic names get transliterated before becoming a branch/tmux-session name.
+- **Trusted groups** — a group can be configured (`trusted-groups.json`) to bind any new forum
+  topic without `/bind`, in `folder` mode (shared project dir) or `worktree` mode (its own git
+  worktree + branch per topic, with a `{create, delete}` shell-command hook, e.g. `wt.py`).
+  A new topic always asks first — mode buttons plus **✏️ Своя папка** for a one-off path — so
+  the folder stays choosable and nothing races an ops command typed right away. Cyrillic topic
+  names get transliterated before becoming a branch/tmux-session name.
 - `/status` — folder + git branch, tmux session name, claude session id, whether claude is
   alive, 5h/7d limits and context fill.
-- `/resume` — bring a session up (`--continue`); `/new` — a fresh one; the hub creates the
-  tmux session (named after the folder) and clicks through the startup prompts (folder trust,
-  dev warning).
+- `/resume` — bring a session up (`--continue`), or `/resume <id|prefix>` for one specific past
+  conversation of this folder — no picker, works with tmux down too (a live session is stopped
+  first, so `--resume` can't fork it); `/new` — a fresh one; the hub creates the tmux session
+  (named after the folder) and clicks through the startup prompts (folder trust, dev warning).
 - `/compact`, `/clear`, `/esc`, `/enter` (submit whatever's in the input line, e.g. a `/compact` that got typed but not sent), `/restart`, `/stop` (graceful, no relaunch) — for a live session.
 - `/model` — opens the CLI's model picker as Telegram buttons (via the picker bridge).
 - `/screen` — live, self-updating PNG of the pane (headless-chrome render of the ANSI capture),

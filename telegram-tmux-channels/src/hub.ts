@@ -1895,6 +1895,23 @@ async function startLiveScreen(chatId: string, threadId: number | undefined, pan
   await startLiveScreen(chatId, threadId, pane, 'text')
 }
 
+// Гасим живые сессии биндинга перед переключением на другую беседу (--resume иначе форкнет).
+async function stopLiveSessions(key: string, binding: BindingEntry): Promise<boolean> {
+  const live = connsForBinding(key, binding.dir)
+  if (live.length === 0) {
+    return true
+  }
+  expectedDisconnect.add(key)
+  setTimeout(() => expectedDisconnect.delete(key), 90_000)
+  for (const conn of live) {
+    const s = router.get(conn)
+    if (s?.pane && s.pid && !(await stopSession(s.pane, s.pid, log).catch(() => false))) {
+      return false
+    }
+  }
+  return true
+}
+
 // tmux+launch for a binding — shared by /resume,/new and auto-topic creation
 async function spawnSession(
   key: string,
@@ -2157,18 +2174,14 @@ async function handleLateTopic(
   topicName: string,
   say: (html: string) => void,
 ): Promise<void> {
-  if (cfg.modes.length > 1) {
-    pendingModeChoice.set(key, { cfg, topicName, say })
-    void bot.api
-      .sendMessage(chatId, modePromptText(cfg, 'Похоже, это новый топик — как поднять сессию?'), {
-        message_thread_id: threadId,
-        parse_mode: 'HTML',
-        reply_markup: modeKeyboard(key, cfg),
-      })
-      .catch(() => {})
-    return
-  }
-  beginTopicSession(key, cfg, cfg.modes[0], topicName, say)
+  pendingModeChoice.set(key, { cfg, topicName, say })
+  void bot.api
+    .sendMessage(chatId, modePromptText(cfg, 'Похоже, это новый топик — как поднять сессию?'), {
+      message_thread_id: threadId,
+      parse_mode: 'HTML',
+      reply_markup: modeKeyboard(key, cfg),
+    })
+    .catch(() => {})
 }
 
 type Inbound = {
@@ -2547,6 +2560,33 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
   const live = binding ? connsForBinding(key, binding.dir) : []
   const session = live.length > 0 ? router.get(live[0]) : undefined
 
+  // /resume <id|префикс> — поднять КОНКРЕТНУЮ беседу, без пикера и независимо от того,
+  // жив ли tmux (spawnSession поднимет его сам). Живую сессию гасим — иначе --resume форкнет.
+  if (cmd === 'resume' && arg) {
+    if (!binding) {
+      void say('⚠️ Тут нет привязки — сначала <code>/bind &lt;папка&gt;</code>.')
+      return
+    }
+    const want = arg.trim().toLowerCase()
+    const hits = [...jsonlMtimes(binding.dir).keys()].filter(id => id.startsWith(want))
+    if (hits.length !== 1) {
+      void say(
+        hits.length === 0
+          ? `⚠️ Нет сессии <code>${escHtml(want)}</code> в ${codePath(binding.dir)}.\n\n<code>/resume</code> без аргумента покажет список.`
+          : `⚠️ Префикс <code>${escHtml(want)}</code> подходит ${hits.length} сессиям — уточни.`,
+      )
+      return
+    }
+    if (!(await stopLiveSessions(key, binding))) {
+      void say('⚠️ Не смог остановить текущую сессию — глянь <code>/screen</code>.')
+      return
+    }
+    binding.sessionId = hits[0]
+    saveBindings(reg)
+    await spawnSession(key, binding, 'resume', html => void say(html))
+    return
+  }
+
   if (cmd === 'status') {
     if (!binding) {
       void say(`📊 <b>${escHtml(key)}</b>\n\n<i>Не привязано.</i> Привяжи через <code>/bind &lt;папка&gt;</code> (админ).`)
@@ -2818,19 +2858,16 @@ bot.on('message:forum_topic_created', ctx => {
       .sendMessage(chat_id, html, { message_thread_id: threadId, parse_mode: 'HTML' })
       .catch(() => {})
 
-  if (cfg.modes.length > 1) {
-    pendingModeChoice.set(key, { cfg, topicName, say })
-    void bot.api
-      .sendMessage(chat_id, modePromptText(cfg, 'Как поднять сессию для этого топика?'), {
-        message_thread_id: threadId,
-        parse_mode: 'HTML',
-        reply_markup: modeKeyboard(key, cfg),
-      })
-      .catch(() => {})
-    return
-  }
-
-  beginTopicSession(key, cfg, cfg.modes[0], topicName, say)
+  // Всегда спрашиваем, даже когда режим один: иначе топик молча стартует в дефолтной папке
+  // и выбрать другую уже нечем (а автостарт ещё и гонится с ручным /resume).
+  pendingModeChoice.set(key, { cfg, topicName, say })
+  void bot.api
+    .sendMessage(chat_id, modePromptText(cfg, 'Как поднять сессию для этого топика?'), {
+      message_thread_id: threadId,
+      parse_mode: 'HTML',
+      reply_markup: modeKeyboard(key, cfg),
+    })
+    .catch(() => {})
 })
 
 bot.on('message:text', async ctx => handleInbound({ ctx, text: ctx.message.text }))
