@@ -2300,7 +2300,10 @@ async function handleInbound(inbound: Inbound): Promise<void> {
   const seenAt = new Date().toISOString()
   recordChat(chat_id, chat.type, chatLabel(chat), seenAt)
   if (threadId != null) {
-    recordTopic(chat_id, threadId, undefined, seenAt)
+    // A plain message carries no topic name, but a message that roots/replies to the topic
+    // sometimes brings the creation service message along — grab the name from it for free.
+    const rootName = ctx.message?.reply_to_message?.forum_topic_created?.name
+    recordTopic(chat_id, threadId, rootName || undefined, seenAt)
   }
   const say = (html: string) =>
     void bot.api
