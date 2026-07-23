@@ -31,6 +31,12 @@ A fork of the official `telegram@claude-plugins-official`.
   Telegram message per binding per turn for: running subagents (🤖 Агенты), the `TaskCreate`/
   `TaskUpdate` todo list (📋 Задачи), and `Skill` tool calls. Finished items keep a ✅ rather
   than disappearing — the message is the turn's history, not just a live snapshot.
+- **Per-project config** `.mux.json` — in a bound folder's root, the project half of the config
+  (named after the plugin). Optional; two keys, both optional:
+  `stand: {up, down, status}` — shell for `/stand_up`/`/stand_down` and the `/status` stand line
+  (`status` exit 0 = up); print `internal=<url>`/`external=<url>` for the links. `worktree:
+  {create, delete}` — replaces the trusted-group `hook` for this folder (create prints the new
+  dir on its last line). `{branch}`/`{dir}` are substituted; hooks run with `stdin` closed.
 - State lives in `~/.claude/channels/telegram/`: `.env` (token + `TELEGRAM_ADMINS`, not in git),
   `bindings.json` (hub-managed, hot-reloaded), `known-chats.json` — every chat the bot has seen
   with its forum topics (`topics: {<threadId>: {title?}}`), so a chat/topic id is one `cat` away.
@@ -92,6 +98,9 @@ a platform limitation, not a plugin one.) The hub autospawns on the first stub c
   conversation of this folder — no picker, works with tmux down too (a live session is stopped
   first, so `--resume` can't fork it); `/new` — a fresh one; the hub creates the tmux session
   (named after the folder) and clicks through the startup prompts (folder trust, dev warning).
+- `/stand_up`, `/stand_down` — raise / tear down this folder's dev stand via hooks in the
+  project's own `.mux.json` (see below); the hook's `internal=…`/`external=…` output lines
+  become the links echoed back, the rest is shown as a log tail. No `.mux.json` → no stand.
 - `/compact`, `/clear`, `/esc`, `/enter` (submit whatever's in the input line, e.g. a `/compact` that got typed but not sent), `/restart`, `/stop` (graceful, no relaunch) — for a live session.
 - `/model` — opens the CLI's model picker as Telegram buttons (via the picker bridge).
 - `/screen` — live, self-updating PNG of the pane (headless-chrome render of the ANSI capture),

@@ -38,7 +38,8 @@ import {
   loadTrustedGroups, isExcludedTopic, slugFromTopicName, MODE_LABEL,
   type TrustedGroupConfig, type TrustedGroupMode,
 } from './trusted-groups'
-import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree } from './dir-resolve'
+import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree, runStandCommand, worktreeHook } from './dir-resolve'
+import { PROJECT_CONFIG_FILE, parseStandLinks, standLogTail } from './project-config'
 import { jsonlMtimes, captureNewSessionId, recentSessions, lastAssistantText, newestJsonlSize } from './session-id'
 import { HubStateRepository, type PersistedPicker } from './state-repo'
 import { recordChat, recordTopic, topicTitle, chatLabel } from './known-chats'
@@ -922,6 +923,8 @@ const OPS_COMMANDS: { command: string; description: string }[] = [
   { command: 'last', description: 'Последнее с экрана текстом (живо, без картинки)' },
   { command: 'new', description: 'Запустить свежую сессию' },
   { command: 'skills', description: 'Проектные скиллы этой сессии (кнопками)' },
+  { command: 'stand_up', description: 'Поднять стенд этой папки (хук из .mux.json)' },
+  { command: 'stand_down', description: 'Погасить стенд этой папки' },
   { command: 'reload', description: 'Пересканировать скиллы плагинов → команды' },
   { command: 'compact', description: 'Отправить /compact в сессию' },
   { command: 'clear', description: 'Очистить историю сессии' },
@@ -2010,9 +2013,11 @@ async function teardownBinding(key: string, binding: BindingEntry): Promise<stri
     note += `\n🪟 tmux <code>${escHtml(name)}</code> закрыт.`
   }
   const groupCfg = loadTrustedGroups()[keyToTarget(key).chat_id]
-  if (binding.hookBranch && groupCfg?.hook?.delete && groupCfg.dir) {
+  // тот же источник, что и на создании: `.mux.json` проекта важнее хука группы
+  const hook = groupCfg?.dir ? worktreeHook(groupCfg.dir, groupCfg.hook) : groupCfg?.hook
+  if (binding.hookBranch && hook?.delete && groupCfg?.dir) {
     try {
-      await runHookDelete(groupCfg.hook, binding.hookBranch, groupCfg.dir)
+      await runHookDelete(hook, binding.hookBranch, groupCfg.dir)
       note += `\n🗑 Хук очистки (<code>${escHtml(binding.hookBranch)}</code>) выполнен.`
     } catch (e) {
       note += `\n⚠️ Хук очистки не удался: ${escHtml(String(e))}`
@@ -2578,6 +2583,40 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
   const live = binding ? connsForBinding(key, binding.dir) : []
   const session = live.length > 0 ? router.get(live[0]) : undefined
 
+  // /stand_up | /stand_down — хуки стенда из `.mux.json` папки биндинга. Хук печатает
+  // `internal=…`/`external=…` — это и есть ссылки, остальной вывод показываем хвостом.
+  if (cmd === 'stand_up' || cmd === 'stand_down') {
+    if (!binding) {
+      void say('⚠️ Тут нет привязки — сначала <code>/bind &lt;папка&gt;</code>.')
+      return
+    }
+    const kind = cmd === 'stand_up' ? 'up' : 'down'
+    void say(kind === 'up' ? '⏳ Поднимаю стенд…' : '⏳ Гашу стенд…')
+    const res = await runStandCommand(binding.dir, kind)
+    if (!res) {
+      void say(
+        `📄 В ${codePath(binding.dir)} нет <code>${PROJECT_CONFIG_FILE}</code> с командой <code>stand.${kind}</code>.\n\n` +
+          `Пример: <code>{ "stand": { "up": "…", "down": "…", "status": "…" } }</code>`,
+      )
+      return
+    }
+    const links = parseStandLinks(res.out)
+    const tail = standLogTail(res.out, res.err)
+    const head = res.ok
+      ? kind === 'up'
+        ? '🟢 <b>Стенд поднят</b>'
+        : '⚪️ <b>Стенд погашен</b>'
+      : `⚠️ <b>Хук стенда (${escHtml(kind)}) упал</b>`
+    const linkLines = [
+      links.external ? `🌍 ${escHtml(links.external)}` : '',
+      links.internal ? `🏠 ${escHtml(links.internal)}` : '',
+    ].filter(Boolean)
+    void say(
+      [head, ...(linkLines.length ? ['', ...linkLines] : []), ...(tail ? ['', `<pre>${escHtml(tail)}</pre>`] : [])].join('\n'),
+    )
+    return
+  }
+
   // /resume <id|префикс> — поднять КОНКРЕТНУЮ беседу, без пикера и независимо от того,
   // жив ли tmux (spawnSession поднимет его сам). Живую сессию гасим — иначе --resume форкнет.
   if (cmd === 'resume' && arg) {
@@ -2634,6 +2673,18 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       const name = sessionName(key, binding.dir)
       const tmuxState = (await hasTmuxSession(name)) ? 'есть' : 'нет сессии'
       lines.push(`🪟 tmux <code>${escHtml(name)}</code>: ${tmuxState}`, '', '→ <code>/resume</code> чтобы поднять')
+    }
+    // Стенд — только если проект вообще умеет его щупать (`.mux.json` → stand.status).
+    const stand = await runStandCommand(binding.dir, 'status')
+    if (stand) {
+      const links = parseStandLinks(stand.out)
+      const url = links.external ?? links.internal
+      lines.push(
+        '',
+        stand.ok
+          ? `🖥 стенд: 🟢 поднят${url ? ` → ${escHtml(url)}` : ''}`
+          : '🖥 стенд: ⚪️ не поднят → <code>/stand_up</code>',
+      )
     }
     const limits = readLimits(binding.dir)
     if (limits) {

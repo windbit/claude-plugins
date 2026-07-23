@@ -1,6 +1,7 @@
 // Resolve a working directory for an auto-topic binding, per trusted-group mode.
 import { basename, dirname, join } from 'path'
 import type { HookConfig, TrustedGroupMode } from './trusted-groups'
+import { loadProjectConfig } from './project-config'
 
 async function run(
   cmd: string[],
@@ -87,6 +88,12 @@ export async function removePlainWorktree(dir: string): Promise<boolean> {
   return true
 }
 
+// Хук worktree берём из `.mux.json` проекта, если он там есть: конфиг рядом с репо
+// авторитетнее группового (одна группа — много папок, у каждой свои команды).
+export function worktreeHook(baseDir: string, groupHook: HookConfig | undefined): HookConfig | undefined {
+  return loadProjectConfig(baseDir)?.worktree ?? groupHook
+}
+
 export async function resolveModeDir(
   mode: TrustedGroupMode,
   baseDir: string,
@@ -98,5 +105,24 @@ export async function resolveModeDir(
   }
   // worktree mode: a configured hook replaces plain `git worktree add` (e.g. a wrapper
   // that also provisions a per-branch DB) — no hook, no customization needed, just git.
-  return hook ? resolveHookDir(hook, branch, baseDir) : resolveWorktreeDir(baseDir, branch)
+  const h = worktreeHook(baseDir, hook)
+  return h ? resolveHookDir(h, branch, baseDir) : resolveWorktreeDir(baseDir, branch)
+}
+
+// Команда стенда из `.mux.json` папки биндинга. Возвращает результат запуска или undefined,
+// если в проекте такой команды нет (тогда и кнопки/команды в чате быть не должно).
+export async function runStandCommand(
+  dir: string,
+  kind: 'up' | 'down' | 'status',
+): Promise<{ ok: boolean; out: string; err: string } | undefined> {
+  const cmd = loadProjectConfig(dir)?.stand?.[kind]
+  if (!cmd) {
+    return undefined
+  }
+  const branch = (await gitBranch(dir)) ?? ''
+  return run(['sh', '-c', fillTemplate(cmd, branch, dir)], {
+    cwd: dir,
+    stdin: 'ignore',
+    env: { ...process.env, TELEGRAM_TOPIC_BRANCH: branch, TELEGRAM_PROJECT_DIR: dir },
+  })
 }

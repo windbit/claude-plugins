@@ -4,11 +4,12 @@
 export type OpsCommand =
   | 'compact' | 'clear' | 'esc' | 'enter' | 'restart' | 'resume' | 'new' | 'status'
   | 'bind' | 'unbind' | 'allow' | 'model' | 'stop' | 'screen' | 'last' | 'delete' | 'skills' | 'reload'
+  | 'stand_up' | 'stand_down'
 
 export function parseOpsCommand(
   text: string,
 ): { cmd: OpsCommand; bot?: string; arg?: string } | undefined {
-  const m = /^\/(compact|clear|esc|enter|restart|resume|new|status|bind|unbind|allow|model|stop|screen|last|delete|skills|reload)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
+  const m = /^\/(compact|clear|esc|enter|restart|resume|new|status|bind|unbind|allow|model|stop|screen|last|delete|skills|reload|stand_up|stand_down)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
     text.trim(),
   )
   if (!m) {
