@@ -75,6 +75,8 @@ const ERROR_SIGNATURES = [
   /^API Error\b/i, // "API Error: Connection closed…", "(Request timed out)", 5xx/429/529 overloaded
   /^Invalid API key/i, // covers "Invalid API key · Please run /login"
   /^OAuth (token|authentication)\b.*(expired|error|invalid)/i,
+  /^Login expired/i, // "Login expired · Please run /login" — the banner STARTS here, so the /login pattern below never fires on it
+  /^Not logged in\b/i, // "Not logged in · Run /login" — статус-строка внизу пейна, а не ⏺-баннер
   /^Please run \/login/i, // logged out / auth expired (anchored — else it matches prose mentioning /login)
   /^Credit balance is too low/i, // billing
   /^(authentication_error|permission_error|overloaded_error|rate_limit_error)\b/i,

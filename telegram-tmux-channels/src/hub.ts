@@ -1324,8 +1324,13 @@ async function handleErrors(pane: string, session: SessionInfo, text: string): P
   if (!target) {
     return
   }
+  // Авторизацию из чата не починить (OAuth интерактивный) — говорим, что делать на хосте,
+  // иначе топик просто молчит на каждое сообщение: ход умирает до вызова reply.
+  const authHint = /login|api key|oauth|credit balance/i.test(err)
+    ? '\n\n🔑 Ход умирает сразу — ответа не будет. Сначала <code>/restart</code> (часто это протухшая авторизация в памяти процесса); если повторится — на хосте нужен <code>claude /login</code>.'
+    : ''
   await bot.api
-    .sendMessage(target.chatId, `⛔️ <b>Ошибка в сессии</b>\n\n<code>${escHtml(err)}</code>`, {
+    .sendMessage(target.chatId, `⛔️ <b>Ошибка в сессии</b>\n\n<code>${escHtml(err)}</code>${authHint}`, {
       ...(target.threadId != null ? { message_thread_id: target.threadId } : {}),
       parse_mode: 'HTML',
     })

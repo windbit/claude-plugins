@@ -305,6 +305,12 @@ describe('tmux-ops', () => {
     expect(parseError('⏺ Done — reporting.\n⏺ API Error: Connection closed mid-response. The response above may be incomplete.\n✻ Cogitated'))
       .toBe('API Error: Connection closed mid-response. The response above may be incomplete.')
     expect(parseError('● Invalid API key · Please run /login')).toContain('Invalid API key')
+    // баннер начинается с "Login expired", а не с "Please run /login" — топик молчал на каждое сообщение
+    expect(parseError('← telegram · troman29: привет\n● Login expired · Please run /login\n✻ Sautéed for 0s'))
+      .toBe('Login expired · Please run /login')
+    // тот же слом другой формой — статус-строка внизу пейна, без глифа
+    expect(parseError('                    Not logged in · Run /login\n❯ \n  ○ 7%  ⏱ 4h56m'))
+      .toBe('Not logged in · Run /login')
     expect(parseError('  Credit balance is too low')).toBe('Credit balance is too low')
     expect(parseError('⏺ your /login session looks fine, no Please run /login needed')).toBeUndefined() // prose, not line-start
     expect(parseError('❯ just working, no errors here')).toBeUndefined()
