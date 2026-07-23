@@ -1,0 +1,28 @@
+# Integration-test harness for the hub — an ISOLATED container (own bot, own home volume) so
+# changes are tested end-to-end BEFORE the live host. Lives WITH the plugin (it tests the plugin,
+# not the homelab host). Run from this dir:
+#   cp docker.env.example docker.env   # fill in TEST bot token + admin id
+#   docker compose build clod-tmux && docker compose up -d clod-tmux
+#   docker compose exec clod-tmux bash # then start tmux + the hub (see docs/testing/)
+services:
+  clod-tmux:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: clod-tmux:dev
+    container_name: clod-tmux
+    hostname: clod-tmux
+    env_file:
+      - ./docker.env
+    volumes:
+      # isolated, persistent home — Claude auth + hub state survive restarts, separate from host ~/.
+      - clod-home:/home/user
+      # live plugin source (edit on host, test in container); '..' = the claude-plugins marketplace,
+      # so the hub runs from /home/user/claude-plugins/telegram-tmux-channels (see docker-entrypoint.sh)
+      - ..:/home/user/claude-plugins
+    tty: true
+    stdin_open: true
+    restart: unless-stopped
+
+volumes:
+  clod-home:
