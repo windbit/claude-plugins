@@ -923,7 +923,7 @@ const OPS_COMMANDS: { command: string; description: string }[] = [
   { command: 'last', description: 'Последнее с экрана текстом (живо, без картинки)' },
   { command: 'new', description: 'Запустить свежую сессию' },
   { command: 'skills', description: 'Проектные скиллы этой сессии (кнопками)' },
-  { command: 'stand_up', description: 'Поднять стенд этой папки (хук из .mux.json)' },
+  { command: 'stand_up', description: 'Поднять стенд этой папки (хук из .tmux-channels.json)' },
   { command: 'stand_down', description: 'Погасить стенд этой папки' },
   { command: 'reload', description: 'Пересканировать скиллы плагинов → команды' },
   { command: 'compact', description: 'Отправить /compact в сессию' },
@@ -2013,7 +2013,7 @@ async function teardownBinding(key: string, binding: BindingEntry): Promise<stri
     note += `\n🪟 tmux <code>${escHtml(name)}</code> закрыт.`
   }
   const groupCfg = loadTrustedGroups()[keyToTarget(key).chat_id]
-  // тот же источник, что и на создании: `.mux.json` проекта важнее хука группы
+  // тот же источник, что и на создании: `.tmux-channels.json` проекта важнее хука группы
   const hook = groupCfg?.dir ? worktreeHook(groupCfg.dir, groupCfg.hook) : groupCfg?.hook
   if (binding.hookBranch && hook?.delete && groupCfg?.dir) {
     try {
@@ -2583,7 +2583,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
   const live = binding ? connsForBinding(key, binding.dir) : []
   const session = live.length > 0 ? router.get(live[0]) : undefined
 
-  // /stand_up | /stand_down — хуки стенда из `.mux.json` папки биндинга. Хук печатает
+  // /stand_up | /stand_down — хуки стенда из `.tmux-channels.json` папки биндинга. Хук печатает
   // `internal=…`/`external=…` — это и есть ссылки, остальной вывод показываем хвостом.
   if (cmd === 'stand_up' || cmd === 'stand_down') {
     if (!binding) {
@@ -2674,7 +2674,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       const tmuxState = (await hasTmuxSession(name)) ? 'есть' : 'нет сессии'
       lines.push(`🪟 tmux <code>${escHtml(name)}</code>: ${tmuxState}`, '', '→ <code>/resume</code> чтобы поднять')
     }
-    // Стенд — только если проект вообще умеет его щупать (`.mux.json` → stand.status).
+    // Стенд — только если проект вообще умеет его щупать (`.tmux-channels.json` → stand.status).
     const stand = await runStandCommand(binding.dir, 'status')
     if (stand) {
       const links = parseStandLinks(stand.out)

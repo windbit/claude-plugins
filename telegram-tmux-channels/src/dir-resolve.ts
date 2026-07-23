@@ -88,7 +88,7 @@ export async function removePlainWorktree(dir: string): Promise<boolean> {
   return true
 }
 
-// Хук worktree берём из `.mux.json` проекта, если он там есть: конфиг рядом с репо
+// Хук worktree берём из `.tmux-channels.json` проекта, если он там есть: конфиг рядом с репо
 // авторитетнее группового (одна группа — много папок, у каждой свои команды).
 export function worktreeHook(baseDir: string, groupHook: HookConfig | undefined): HookConfig | undefined {
   return loadProjectConfig(baseDir)?.worktree ?? groupHook
@@ -109,7 +109,7 @@ export async function resolveModeDir(
   return h ? resolveHookDir(h, branch, baseDir) : resolveWorktreeDir(baseDir, branch)
 }
 
-// Команда стенда из `.mux.json` папки биндинга. Возвращает результат запуска или undefined,
+// Команда стенда из `.tmux-channels.json` папки биндинга. Возвращает результат запуска или undefined,
 // если в проекте такой команды нет (тогда и кнопки/команды в чате быть не должно).
 export async function runStandCommand(
   dir: string,

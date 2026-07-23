@@ -1,7 +1,7 @@
-// `.mux.json` in a project's root — the per-project half of the hub's config, next to the
-// per-chat half in bindings.json. Hooks differ per repo (how to raise a stand, how to cut a
-// worktree), so they live WITH the repo instead of in the hub's group config; a folder
-// without the file simply has no stand commands.
+// `.tmux-channels.json` in a project's root — the per-project half of the hub's config
+// (named after the plugin), next to the per-chat half in bindings.json. Hooks differ per repo
+// (how to raise a stand, how to cut a worktree), so they live WITH the repo instead of in the
+// hub's group config; a folder without the file simply has no stand commands.
 //
 // {
 //   "stand": { "up": "…", "down": "…", "status": "…" },   // status: exit 0 = поднят
@@ -11,7 +11,7 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import { safeJsonParse } from './util'
 
-export const PROJECT_CONFIG_FILE = '.mux.json'
+export const PROJECT_CONFIG_FILE = '.tmux-channels.json'
 
 export type StandConfig = { up?: string; down?: string; status?: string }
 export type ProjectConfig = {
