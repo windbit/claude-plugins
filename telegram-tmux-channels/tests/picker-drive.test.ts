@@ -7,16 +7,16 @@ import { buildKeyboard, parseCallback } from '../src/picker-drive'
 const fx = (n: string) => readFileSync(join(import.meta.dir, 'fixtures', n), 'utf8')
 
 describe('buildKeyboard', () => {
-  test('single: кнопка на опцию, custom отдельной кнопкой, без Submit', () => {
+  test('single: button per option, custom as its own button, no Submit', () => {
     const p = parsePicker(fx('ask-single.txt'))!
     const kb = buildKeyboard(p, 'ab12cd34', [])
     const flat = kb.buttons.flat()
-    expect(flat.find(b => b.data === 'pk:ab12cd34:o1')?.text).toBe('Чай')
+    expect(flat.find(b => b.data === 'pk:ab12cd34:o1')?.text).toBe('Tea')
     expect(flat.some(b => b.data === 'pk:ab12cd34:c')).toBe(true)
     expect(flat.some(b => b.data === 'pk:ab12cd34:s')).toBe(false)
-    expect(kb.text).toContain('Чай или кофе?')
+    expect(kb.text).toContain('Tea or coffee?')
   })
-  test('multi: тоггл-лейблы из checked, есть Submit', () => {
+  test('multi: toggle labels from checked, has Submit', () => {
     const p = parsePicker(fx('ask-multi.txt'))!
     const kb = buildKeyboard(p, 'dcab0000', [2])
     const flat = kb.buttons.flat()
@@ -27,7 +27,7 @@ describe('buildKeyboard', () => {
 })
 
 describe('parseCallback', () => {
-  test('opt/submit/custom; чужой data → undefined', () => {
+  test('opt/submit/custom; foreign data → undefined', () => {
     expect(parseCallback('pk:ab12cd34:o3')).toEqual({ token: 'ab12cd34', action: { kind: 'opt', index: 3 } })
     expect(parseCallback('pk:dcab0000:s')).toEqual({ token: 'dcab0000', action: { kind: 'submit' } })
     expect(parseCallback('pk:dcab0000:c')).toEqual({ token: 'dcab0000', action: { kind: 'custom' } })

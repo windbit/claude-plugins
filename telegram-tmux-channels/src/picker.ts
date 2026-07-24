@@ -3,7 +3,7 @@
 
 const OPTION_RE = /^\s*❯?\s*(\d+)\.\s+(.*)$/
 const CHECKBOX_RE = /^\[[ ✔xX]\]\s*/
-const CUSTOM_RE = /type something|other|custom|свой|own/i
+const CUSTOM_RE = /type something|other|custom|own/i
 const FOOTER = 'Esc to cancel'
 
 export type PickerOption = { index: number; label: string }
@@ -141,16 +141,16 @@ export function parsePicker(text: string): Picker | undefined {
 // "N <unit> ago · branch · size". Driven by arrow keys, not digits.
 
 export type ResumeRow = { title: string; meta: string }
-// pos/count — абсолютная позиция курсора из заголовка "(N of M)"; cursor — индекс ❯ среди видимых строк
+// pos/count — absolute cursor position from the "(N of M)" header; cursor — the ❯ index among visible rows
 export type ResumeList = { total: string; pos: number; count: number; cursor: number; rows: ResumeRow[] }
 
-// счётчик "(N of M)" пропадает, когда весь список влезает в viewport — тогда pos/count берём из видимых строк
+// the "(N of M)" counter disappears when the whole list fits the viewport — then pos/count come from the visible rows
 const RESUME_HEADER_RE = /Resume session(?: \((\d+) of (\d+)\))?\s*$/
 const RESUME_META_RE = /ago · .+ · \S+B\s*$/
 
 export function parseResumeList(text: string): ResumeList | undefined {
   const lines = text.split('\n')
-  // TUI рисуется внизу экрана — ищем с конца, чтобы не поймать похожий текст в транскрипте
+  // the TUI is drawn at the bottom of the screen — search from the end, so we don't catch similar text in the transcript
   let h = -1
   for (let i = lines.length - 1; i >= 0; i--) {
     if (RESUME_HEADER_RE.test(lines[i])) {

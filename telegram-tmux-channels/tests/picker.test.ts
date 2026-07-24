@@ -6,76 +6,76 @@ import { parsePicker, checkedIndexes, parseResumeList } from '../src/picker'
 const fx = (name: string) => readFileSync(join(import.meta.dir, 'fixtures', name), 'utf8')
 
 describe('parsePicker', () => {
-  test('single /model: опции, режим, без custom', () => {
+  test('single /model: options, mode, no custom', () => {
     const p = parsePicker(fx('model-single.txt'))!
     expect(p.mode).toBe('single')
     expect(p.options.map(o => o.index)).toEqual([1, 2, 3, 4, 5])
     expect(p.options[3].label).toBe('Sonnet')
     expect(p.customIndex).toBeUndefined()
   })
-  test('single AskUserQuestion: label без описания, custom=Type something', () => {
+  test('single AskUserQuestion: label without description, custom=Type something', () => {
     const p = parsePicker(fx('ask-single.txt'))!
     expect(p.mode).toBe('single')
-    expect(p.title).toContain('Чай или кофе?')
+    expect(p.title).toContain('Tea or coffee?')
     expect(p.options).toEqual([
-      { index: 1, label: 'Чай' },
-      { index: 2, label: 'Кофе' },
+      { index: 1, label: 'Tea' },
+      { index: 2, label: 'Coffee' },
       { index: 3, label: 'Type something.' },
       { index: 4, label: 'Chat about this' },
     ])
     expect(p.customIndex).toBe(3)
   })
-  test('multi: чекбоксы → mode multi, label без [ ]', () => {
+  test('multi: checkboxes → mode multi, label without [ ]', () => {
     const p = parsePicker(fx('ask-multi.txt'))!
     expect(p.mode).toBe('multi')
     expect(p.options[0]).toEqual({ index: 1, label: 'Python' })
     expect(p.customIndex).toBe(4)
   })
-  test('обычный текст без пикера → undefined', () => {
+  test('plain text without a picker → undefined', () => {
     expect(parsePicker('just a prompt\n❯ \n')).toBeUndefined()
   })
-  test('stale footer: остаток «Esc to cancel» с промпт-боксом под ним → не пикер', () => {
+  test('stale footer: leftover «Esc to cancel» with a prompt box under it → not a picker', () => {
     expect(parsePicker(fx('stale-footer.txt'))).toBeUndefined()
   })
-  test('live picker + чужой хвост (эхо телеграм-сообщений, task-виджет) под футером → всё ещё пикер', () => {
+  test('live picker + foreign trailing chrome (echoed telegram messages, task widget) under the footer → still a picker', () => {
     const p = parsePicker(fx('live-with-trailing-chrome.txt'))!
-    expect(p.options.map(o => o.label)).toEqual(['Вернуться к тексту', 'Оставить голосовые как есть', 'Type something.', 'Chat about this'])
+    expect(p.options.map(o => o.label)).toEqual(['Back to text', 'Keep voice as is', 'Type something.', 'Chat about this'])
   })
-  test('scrollback: нумерованный список ВЫШЕ пикера не попадает в опции/заголовок', () => {
+  test('scrollback: a numbered list ABOVE the picker does not leak into options/title', () => {
     const p = parsePicker(fx('scrollback-noise.txt'))!
-    expect(p.options.map(o => o.label)).toEqual(['Мигрировать', 'Откатить', 'Type something.'])
-    expect(p.title).toBe('Какой следующий шаг?')
-    expect(p.title).not.toContain('бэкап')
+    expect(p.options.map(o => o.label)).toEqual(['Migrate', 'Roll back', 'Type something.'])
+    expect(p.title).toBe("What's the next step?")
+    expect(p.title).not.toContain('back up')
   })
-  test('хэш стабилен и различает пикеры', () => {
+  test('hash is stable and distinguishes pickers', () => {
     expect(parsePicker(fx('ask-single.txt'))!.hash).toBe(parsePicker(fx('ask-single.txt'))!.hash)
     expect(parsePicker(fx('ask-single.txt'))!.hash).not.toBe(parsePicker(fx('ask-multi.txt'))!.hash)
   })
 })
 
 describe('checkedIndexes', () => {
-  test('читает [✔] из multi', () => {
+  test('reads [✔] from multi', () => {
     expect(checkedIndexes(fx('ask-multi.txt'))).toEqual([2])
   })
-  test('single без чекбоксов → []', () => {
+  test('single without checkboxes → []', () => {
     expect(checkedIndexes(fx('ask-single.txt'))).toEqual([])
   })
 })
 
 describe('parseResumeList', () => {
-  test('реальный снимок /resume: строки, курсор, total', () => {
+  test('real /resume snapshot: rows, cursor, total', () => {
     const l = parseResumeList(fx('resume-list.txt'))!
     expect(l.total).toBe('1 of 27')
     expect(l.cursor).toBe(0)
     expect(l.rows.map(r => r.title)).toEqual([
       '(session)',
-      'закоммить изменения в homelab и плагине',
-      'Напомнить о работе последних двух дней',
+      'commit changes in homelab and the plugin',
+      'Remind me of the last two days of work',
       'Set up Telegram binding for Claude server',
     ])
     expect(l.rows[1].meta).toBe('1 day ago · main · 6.9MB')
   })
-  test('обычный экран без списка → undefined', () => {
+  test('plain screen without a list → undefined', () => {
     expect(parseResumeList(fx('model-single.txt'))).toBeUndefined()
     expect(parseResumeList('')).toBeUndefined()
   })

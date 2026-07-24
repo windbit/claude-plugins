@@ -1,14 +1,14 @@
-● Вот шаги миграции:
-  1. Сначала бэкап базы
-  2. Потом накатить схему
-  3. Наконец переключить трафик
-Готово, что дальше?
+● Here are the migration steps:
+  1. First back up the DB
+  2. Then apply the schema
+  3. Finally switch traffic
+Done, what next?
 ────────────────────────────────────────────────────────────────
- ☐ Действие
-Какой следующий шаг?
-❯ 1. Мигрировать
-     Мигрировать
-  2. Откатить
-     Откатить
+ ☐ Action
+What's the next step?
+❯ 1. Migrate
+     Migrate
+  2. Roll back
+     Roll back
   3. Type something.
 Enter to select · ↑/↓ to navigate · Esc to cancel

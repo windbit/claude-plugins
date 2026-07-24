@@ -1,5 +1,5 @@
-// ANSI (tmux capture-pane -e) → HTML для PNG-рендера /screen через headless chrome.
-// Только SGR-коды (цвет/жирность/инверсия); остальные escape-последовательности срезаются.
+// ANSI (tmux capture-pane -e) → HTML for the /screen PNG render via headless chrome.
+// Only SGR codes (color/bold/inverse); other escape sequences are stripped.
 
 const BASE16 = [
   '#1e1e1e', '#f44747', '#6a9955', '#d7ba7d', '#569cd6', '#c586c0', '#4ec9b0', '#d4d4d4',
@@ -23,7 +23,7 @@ const escHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').re
 
 type Sgr = { fg?: string; bg?: string; bold?: boolean; reverse?: boolean }
 
-// один span на отрезок с одинаковым стилем
+// one span per run of identical style
 function span(text: string, st: Sgr): string {
   if (!text) {
     return ''
@@ -37,7 +37,7 @@ function span(text: string, st: Sgr): string {
 }
 
 export function ansiToHtml(ansi: string): string {
-  // не-SGR escape-последовательности (OSC, курсор и т.п.) — вон
+  // non-SGR escape sequences (OSC, cursor, etc.) — out
   const clean = ansi.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[a-lnzA-Z]|\x1b[^[\]]/g, '')
   let st: Sgr = {}
   let out = ''

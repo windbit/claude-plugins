@@ -117,10 +117,10 @@ describe('limits', () => {
   test('fmtUntil: m / h / d', () => {
     const now = 1_000_000_000_000
     const at = (secs: number) => Math.floor(now / 1000) + secs
-    expect(fmtUntil(at(45 * 60), now)).toBe('45м')
-    expect(fmtUntil(at(2 * 3600 + 47 * 60), now)).toBe('2ч47м')
-    expect(fmtUntil(at(3 * 86400 + 4 * 3600), now)).toBe('3д4ч')
-    expect(fmtUntil(at(-5), now)).toBe('0м')
+    expect(fmtUntil(at(45 * 60), now)).toBe('45m')
+    expect(fmtUntil(at(2 * 3600 + 47 * 60), now)).toBe('2h47m')
+    expect(fmtUntil(at(3 * 86400 + 4 * 3600), now)).toBe('3d4h')
+    expect(fmtUntil(at(-5), now)).toBe('0m')
   })
   test('formatLimits: line + stale marker', () => {
     const now = 1_000_000_000_000
@@ -134,17 +134,17 @@ describe('limits', () => {
     }
     const lines = formatLimits(l, now)
     expect(lines).toEqual([
-      'Контекст: 34%',
-      'Сессия 5ч: 43%, сброс 2ч30м',
-      'Сессия 7д: 30%, сброс 1д0ч',
-      '(данные 10м назад)',
+      'Context: 34%',
+      'Session 5h: 43%, reset 2h30m',
+      'Session 7d: 30%, reset 1d0h',
+      '(data 10m ago)',
     ])
     expect(formatLimits({ ageMs: 0 }, now)).toEqual([])
   })
   test('formatLimits: rounds floating-point percentages from upstream', () => {
     const now = 1_000_000_000_000
     const lines = formatLimits({ contextPct: 90, fiveHourPct: 7.000000000000001, ageMs: 0 }, now)
-    expect(lines).toEqual(['Контекст: 90%', 'Сессия 5ч: 7%'])
+    expect(lines).toEqual(['Context: 90%', 'Session 5h: 7%'])
   })
 })
 
@@ -198,7 +198,7 @@ describe('tmux-ops', () => {
   test('isHeadlessArgv: one-shot -p runs must never be learned as a binding launch command', () => {
     // the prod loop: a Role-2 review ran with -p, the hub learned it, and every revive replayed
     // the batch prompt and exited immediately
-    expect(isHeadlessArgv(['claude', '-p', 'Роль 2 …', '--resume', 'abc'])).toBe(true)
+    expect(isHeadlessArgv(['claude', '-p', 'Role 2 …', '--resume', 'abc'])).toBe(true)
     expect(isHeadlessArgv(['claude', '--print', 'do a thing'])).toBe(true)
     expect(isHeadlessArgv(['claude', '--print=x'])).toBe(true)
     // real interactive launches must still be learned
@@ -210,11 +210,11 @@ describe('tmux-ops', () => {
 
   test('planAttachments: photos album up, caption only when the text really fits one message', () => {
     // one photo + short text → caption, no separate message
-    const one = planAttachments(['/a/x.png'], ['привет'])
+    const one = planAttachments(['/a/x.png'], ['hi'])
     expect(one.photos).toEqual([['/a/x.png']])
     expect(one.caption).toBe(true)
     // 3 photos → a single album, caption still allowed (rides on the first item)
-    const album = planAttachments(['/a/1.jpg', '/a/2.JPG', '/a/3.webp'], ['подпись'])
+    const album = planAttachments(['/a/1.jpg', '/a/2.JPG', '/a/3.webp'], ['caption'])
     expect(album.photos).toEqual([['/a/1.jpg', '/a/2.JPG', '/a/3.webp']])
     expect(album.caption).toBe(true)
     // >10 photos split into albums of 10 — Telegram rejects a bigger group
@@ -236,7 +236,7 @@ describe('tmux-ops', () => {
   })
 
   test('isClaudeArgv: a bare /cli.js is not claude — that mistook Playwright for a live session', () => {
-    // prod: /resume refused with "в этой папке уже работает claude (pid 12442, 14340)" — those
+    // prod: /resume refused with "claude is already running in this folder (pid 12442, 14340)" — those
     // were @playwright/test MCP servers sharing the project cwd, so the binding couldn't revive
     expect(isClaudeArgv([
       'node', '/home/user/projects/agentek-console/node_modules/@playwright/test/cli.js', 'run-test-mcp-server',
@@ -291,7 +291,7 @@ describe('tmux-ops', () => {
     expect(parseCompaction('· Compacting conversation…\n  ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 0%'))
       .toEqual({ pct: 0 })
     // idle pane → nothing
-    expect(parseCompaction('❯ да, сделай webhook\n  ◑ 39%  █░░░░░░░░░ 12%  ⏱ 1h50m')).toBeUndefined()
+    expect(parseCompaction('❯ yes, do the webhook\n  ◑ 39%  █░░░░░░░░░ 12%  ⏱ 1h50m')).toBeUndefined()
     // the words as scrollback CONTENT, bar not adjacent → must NOT match (the self-scrape bug)
     expect(parseCompaction('discussing Compacting conversation… (elapsed)\nsome other line\nmore text\n  ▰▰▰▰▰▰ 61% example')).toBeUndefined()
   })
@@ -319,10 +319,10 @@ describe('tmux-ops', () => {
     expect(parseError('⏺ Done — reporting.\n⏺ API Error: Connection closed mid-response. The response above may be incomplete.\n✻ Cogitated'))
       .toBe('API Error: Connection closed mid-response. The response above may be incomplete.')
     expect(parseError('● Invalid API key · Please run /login')).toContain('Invalid API key')
-    // баннер начинается с "Login expired", а не с "Please run /login" — топик молчал на каждое сообщение
-    expect(parseError('← telegram · troman29: привет\n● Login expired · Please run /login\n✻ Sautéed for 0s'))
+    // the banner starts with "Login expired", not "Please run /login" — the topic stayed silent on every message
+    expect(parseError('← telegram · troman29: hi\n● Login expired · Please run /login\n✻ Sautéed for 0s'))
       .toBe('Login expired · Please run /login')
-    // тот же слом другой формой — статус-строка внизу пейна, без глифа
+    // the same breakage in another form — a status line at the bottom of the pane, without the glyph
     expect(parseError('                    Not logged in · Run /login\n❯ \n  ○ 7%  ⏱ 4h56m'))
       .toBe('Not logged in · Run /login')
     expect(parseError('  Credit balance is too low')).toBe('Credit balance is too low')
@@ -460,13 +460,13 @@ describe('session-id', () => {
     writeFileSync(
       join(claudeProjectDir(proj), 's.jsonl'),
       [
-        JSON.stringify({ type: 'assistant', timestamp: iso(now - 9e4), message: { content: [{ type: 'text', text: 'прошлый ход' }] } }),
+        JSON.stringify({ type: 'assistant', timestamp: iso(now - 9e4), message: { content: [{ type: 'text', text: 'previous turn' }] } }),
         JSON.stringify({ type: 'user', timestamp: iso(now), message: { content: 'hi' } }),
-        JSON.stringify({ type: 'assistant', timestamp: iso(now + 1e3), message: { content: [{ type: 'text', text: 'Готово' }] } }),
+        JSON.stringify({ type: 'assistant', timestamp: iso(now + 1e3), message: { content: [{ type: 'text', text: 'Done' }] } }),
         JSON.stringify({ type: 'assistant', timestamp: iso(now + 2e3), message: { content: [{ type: 'tool_use', name: 'Bash' }] } }),
       ].join('\n') + '\n',
     )
-    expect(lastAssistantText(proj, now)).toBe('Готово')
+    expect(lastAssistantText(proj, now)).toBe('Done')
   })
 
   test('lastAssistantText: "" when the turn produced only tool calls (stale text guard)', () => {
@@ -477,7 +477,7 @@ describe('session-id', () => {
     writeFileSync(
       join(claudeProjectDir(proj), 's.jsonl'),
       [
-        JSON.stringify({ type: 'assistant', timestamp: iso(now - 9e4), message: { content: [{ type: 'text', text: 'ответ прошлого хода' }] } }),
+        JSON.stringify({ type: 'assistant', timestamp: iso(now - 9e4), message: { content: [{ type: 'text', text: 'previous turn reply' }] } }),
         JSON.stringify({ type: 'assistant', timestamp: iso(now + 1e3), message: { content: [{ type: 'tool_use', name: 'Bash' }] } }),
       ].join('\n') + '\n',
     )

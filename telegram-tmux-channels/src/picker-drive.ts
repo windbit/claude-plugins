@@ -1,4 +1,5 @@
 import type { Picker } from './picker'
+import { t } from './i18n'
 
 export type PickAction = { kind: 'opt'; index: number } | { kind: 'submit' } | { kind: 'custom' }
 
@@ -7,6 +8,7 @@ export function buildKeyboard(
   token: string,
   checked: number[],
 ): { text: string; buttons: { text: string; data: string }[][] } {
+  const L = t()
   const checkedSet = new Set(checked)
   const buttons: { text: string; data: string }[][] = []
   for (const opt of picker.options) {
@@ -18,15 +20,15 @@ export function buildKeyboard(
   }
   const tail: { text: string; data: string }[] = []
   if (picker.customIndex != null) {
-    tail.push({ text: '✍️ Свой вариант', data: `pk:${token}:c` })
+    tail.push({ text: L.pkCustom, data: `pk:${token}:c` })
   }
   if (picker.mode === 'multi') {
-    tail.push({ text: '✅ Submit', data: `pk:${token}:s` })
+    tail.push({ text: L.pkSubmit, data: `pk:${token}:s` })
   }
   if (tail.length > 0) {
     buttons.push(tail)
   }
-  return { text: picker.title || 'Выбор:', buttons }
+  return { text: picker.title || L.pkTitleDefault, buttons }
 }
 
 export function parseCallback(data: string): { token: string; action: PickAction } | undefined {

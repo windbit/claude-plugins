@@ -4,6 +4,7 @@ import { readFileSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { safeJsonParse } from './util'
+import { t } from './i18n'
 
 const LIMITS_DIR = join(homedir(), '.claude', 'channels', 'telegram', 'limits')
 const STALE_LIMITS_MS = 5 * 60 * 1000
@@ -40,19 +41,20 @@ export function readLimits(dir: string, now = Date.now()): Limits | undefined {
 }
 
 export function fmtDuration(secs: number): string {
+  const L = t()
   if (secs <= 0) {
-    return '0м'
+    return L.durZero
   }
   const d = Math.floor(secs / 86400)
   const h = Math.floor((secs % 86400) / 3600)
   const m = Math.floor((secs % 3600) / 60)
   if (d > 0) {
-    return `${d}д${h}ч`
+    return L.durDaysHours(d, h)
   }
   if (h > 0) {
-    return `${h}ч${String(m).padStart(2, '0')}м`
+    return L.durHoursMins(h, String(m).padStart(2, '0'))
   }
-  return `${m}м`
+  return L.durMins(m)
 }
 
 export function fmtUntil(resetsAtSec: number, nowMs: number): string {
@@ -65,23 +67,24 @@ function fmtPct(pct: number): string {
 }
 
 export function formatLimits(l: Limits, nowMs: number): string[] {
+  const L = t()
   const lines: string[] = []
   if (l.contextPct != null) {
-    lines.push(`Контекст: ${fmtPct(l.contextPct)}`)
+    lines.push(L.limContext(fmtPct(l.contextPct)))
   }
   if (l.fiveHourPct != null) {
-    const reset = l.fiveHourResetsAt != null ? `, сброс ${fmtUntil(l.fiveHourResetsAt, nowMs)}` : ''
-    lines.push(`Сессия 5ч: ${fmtPct(l.fiveHourPct)}${reset}`)
+    const reset = l.fiveHourResetsAt != null ? L.limReset(fmtUntil(l.fiveHourResetsAt, nowMs)) : ''
+    lines.push(L.limFiveHour(fmtPct(l.fiveHourPct), reset))
   }
   if (l.sevenDayPct != null) {
-    const reset = l.sevenDayResetsAt != null ? `, сброс ${fmtUntil(l.sevenDayResetsAt, nowMs)}` : ''
-    lines.push(`Сессия 7д: ${fmtPct(l.sevenDayPct)}${reset}`)
+    const reset = l.sevenDayResetsAt != null ? L.limReset(fmtUntil(l.sevenDayResetsAt, nowMs)) : ''
+    lines.push(L.limSevenDay(fmtPct(l.sevenDayPct), reset))
   }
   if (lines.length === 0) {
     return []
   }
   if (l.ageMs > STALE_LIMITS_MS) {
-    lines.push(`(данные ${fmtDuration(Math.floor(l.ageMs / 1000))} назад)`)
+    lines.push(L.limStale(fmtDuration(Math.floor(l.ageMs / 1000))))
   }
   return lines
 }

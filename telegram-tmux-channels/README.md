@@ -117,6 +117,10 @@ a platform limitation, not a plugin one.) The hub autospawns on the first stub c
   user sees + the live bottom — spinner, token %, permission mode), border/blank noise stripped.
   No chrome, so it's also `/screen`'s fallback when chrome is unavailable. Both refresh every 5s
   and auto-stop after 3 min (the message + Close button stay).
+- `/lang en` | `/lang ru` (admin) — switch the interface language **globally** (one setting
+  for the whole hub, persisted to `<state>/lang`), including the bot command descriptions
+  (re-registered on switch). Default is English; override the initial value with `TELEGRAM_LANG`.
+  Strings live in `src/i18n/{en,ru}.ts` (`en` is canonical, `ru` typed against it).
 - Won't start a second session if claude is already running in the folder (so `--continue`
   doesn't fork a foreign conversation).
 - An unexpected death (tmux/process gone without an explicit `/restart`) gets a 💀 notice after
@@ -128,10 +132,11 @@ a platform limitation, not a plugin one.) The hub autospawns on the first stub c
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | — | bot token (required) |
 | `TELEGRAM_ADMINS` | — | admin ids, comma-separated |
+| `TELEGRAM_LANG` | `en` | initial UI language (`en`/`ru`); `/lang` overrides it at runtime (persisted) |
 | `TELEGRAM_PROJECTS_DIR` | `$HOME/projects` | base for `/bind <name>` |
 | `TELEGRAM_LAUNCH_CMD` | `claude --permission-mode bypassPermissions` | base launch for `/new`,`/resume` (channel flags appended automatically) |
 | `TELEGRAM_HUB_AUTOSPAWN` | `1` | `0` disables autospawn (for a service-only install) |
-| `TELEGRAM_CONTEXT_WARN_PCT` | `80` | append `⚠️ Контекст: NN%` under an agent's text reply once its context-window usage reaches this %; `0` disables |
+| `TELEGRAM_CONTEXT_WARN_PCT` | `80` | append `⚠️ Context: NN%` (localized) under an agent's text reply once its context-window usage reaches this %; `0` disables |
 | `TELEGRAM_DEBUG_LOG` | `0` | `1` enables the debug log (`screenlog.jsonl`, all hub traffic); off by default |
 | `TELEGRAM_IDLE_UNLOAD_MINUTES` | `0` | idle minutes before a session is stopped (auto-resumes on next message); `0`/unset disables. `/pin` exempts a topic |
 | `OPENAI_API_KEY` | — | enables voice (STT + TTS); unset = voice silently disabled |

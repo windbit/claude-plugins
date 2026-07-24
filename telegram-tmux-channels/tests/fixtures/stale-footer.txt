@@ -1,11 +1,11 @@
-🔽 Всё готово — мост реализован.
-Что сделано (5 задач, TDD, инлайн):
-  1. picker.ts — парсер
-  2. picker-drive.ts — клавиатура
-  3. поллер экрана
-  4. нажатия single/multi/custom
-  5. живой смок
-Всё в main, тесты зелёные.
+🔽 All done — the bridge is implemented.
+What's done (5 tasks, TDD, inline):
+  1. picker.ts — parser
+  2. picker-drive.ts — keyboard
+  3. screen poller
+  4. single/multi/custom presses
+  5. live smoke test
+All in main, tests green.
 Enter to select · ↑/↓ to navigate · Esc to cancel
 ────────────────────────────────────────────────────────────────
 ❯

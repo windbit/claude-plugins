@@ -1,5 +1,5 @@
-←  ☐ Языки  ✔ Submit  →
-Какие языки?
+←  ☐ Languages  ✔ Submit  →
+Which languages?
 ❯ 1. [ ] Python
   Python
   2. [✔] Go

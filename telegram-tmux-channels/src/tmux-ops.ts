@@ -4,12 +4,12 @@
 export type OpsCommand =
   | 'compact' | 'clear' | 'esc' | 'enter' | 'restart' | 'resume' | 'new' | 'status'
   | 'bind' | 'unbind' | 'allow' | 'model' | 'stop' | 'screen' | 'last' | 'delete' | 'skills' | 'reload'
-  | 'stand_up' | 'stand_down' | 'pin' | 'unpin'
+  | 'stand_up' | 'stand_down' | 'pin' | 'unpin' | 'lang'
 
 export function parseOpsCommand(
   text: string,
 ): { cmd: OpsCommand; bot?: string; arg?: string } | undefined {
-  const m = /^\/(compact|clear|esc|enter|restart|resume|new|status|bind|unbind|allow|model|stop|screen|last|delete|skills|reload|stand_up|stand_down|pin|unpin)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
+  const m = /^\/(compact|clear|esc|enter|restart|resume|new|status|bind|unbind|allow|model|stop|screen|last|delete|skills|reload|stand_up|stand_down|pin|unpin|lang)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
     text.trim(),
   )
   if (!m) {
@@ -71,13 +71,13 @@ export function parseContextPct(text: string): number | undefined {
 // must see (transient API failures, expired login, billing). Anchored at the line start
 // after stripping the ⏺/● TUI bullet, on the last visible lines only — so the words don't
 // false-trigger as scrollback prose (e.g. a session discussing an API error). Extend the
-// list as new banners turn up ("наверно что-то ещё" — Roma). Pure — tested in core.test.ts.
+// list as new banners turn up ("probably something else too" — Roma). Pure — tested in core.test.ts.
 const ERROR_SIGNATURES = [
   /^API Error\b/i, // "API Error: Connection closed…", "(Request timed out)", 5xx/429/529 overloaded
   /^Invalid API key/i, // covers "Invalid API key · Please run /login"
   /^OAuth (token|authentication)\b.*(expired|error|invalid)/i,
   /^Login expired/i, // "Login expired · Please run /login" — the banner STARTS here, so the /login pattern below never fires on it
-  /^Not logged in\b/i, // "Not logged in · Run /login" — статус-строка внизу пейна, а не ⏺-баннер
+  /^Not logged in\b/i, // "Not logged in · Run /login" — a status line at the bottom of the pane, not a ⏺ banner
   /^Please run \/login/i, // logged out / auth expired (anchored — else it matches prose mentioning /login)
   /^Credit balance is too low/i, // billing
   /^(authentication_error|permission_error|overloaded_error|rate_limit_error)\b/i,
@@ -304,8 +304,8 @@ export async function ensureTmuxSession(name: string, dir: string): Promise<bool
 // risk this guards against doesn't apply there.
 const SYSTEMD_RUN = Bun.which('systemd-run')
 
-// detached tmux defaults to 80×24 — TUI-пикеры (напр. /resume) влезают в 1 строку;
-// задаём человеческий размер, при attach размер клиента всё равно возьмёт верх
+// detached tmux defaults to 80×24 — TUI pickers (e.g. /resume) get squeezed onto 1 line;
+// set a sane size; on attach the client's size takes over anyway
 const DETACHED_SIZE = ['-x', '200', '-y', '100']
 
 async function spawnDetachedTmuxServer(name: string, dir: string): Promise<void> {
@@ -323,7 +323,7 @@ async function spawnDetachedTmuxServer(name: string, dir: string): Promise<void>
   }
 }
 
-// как capturePane, но с ANSI-кодами (-e) — сырьё для PNG-рендера /screen
+// like capturePane, but with ANSI codes (-e) — raw material for the /screen PNG render
 export async function capturePaneAnsi(pane: string): Promise<string> {
   const proc = Bun.spawn(['tmux', 'capture-pane', '-e', '-p', '-t', pane], {
     stdout: 'pipe',

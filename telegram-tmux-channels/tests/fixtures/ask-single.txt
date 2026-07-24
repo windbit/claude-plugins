@@ -1,9 +1,9 @@
- ☐ Напиток
-Чай или кофе?
-❯ 1. Чай
-     Чай
-  2. Кофе
-     Кофе
+ ☐ Drink
+Tea or coffee?
+❯ 1. Tea
+     Tea
+  2. Coffee
+     Coffee
   3. Type something.
 ────────────────────────────────────────────────────────────────
   4. Chat about this

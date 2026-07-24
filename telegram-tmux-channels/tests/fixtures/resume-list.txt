@@ -8,10 +8,10 @@
    ❯ (session)
      3 minutes ago · master · 53.3KB
 
-     закоммить изменения в homelab и плагине
+     commit changes in homelab and the plugin
      1 day ago · main · 6.9MB
 
-     Напомнить о работе последних двух дней
+     Remind me of the last two days of work
      2 days ago · master · 9.3MB
 
    ↓ Set up Telegram binding for Claude server

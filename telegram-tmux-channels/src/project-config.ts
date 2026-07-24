@@ -4,8 +4,8 @@
 // hub's group config; a folder without the file simply has no stand commands.
 //
 // {
-//   "stand": { "up": "…", "down": "…", "status": "…" },   // status: exit 0 = поднят
-//   "worktree": { "create": "…", "delete": "…" }          // create печатает путь последней строкой
+//   "stand": { "up": "…", "down": "…", "status": "…" },   // status: exit 0 = up
+//   "worktree": { "create": "…", "delete": "…" }          // create prints the path on its last line
 // }
 import { readFileSync } from 'fs'
 import { join } from 'path'
@@ -29,8 +29,8 @@ export function loadProjectConfig(dir: string): ProjectConfig | undefined {
   return safeJsonParse<ProjectConfig>(raw)
 }
 
-// Ссылки на стенд из вывода хука: строки `internal=…` / `external=…` в любом месте вывода.
-// Всё остальное — обычный лог, его показываем хвостом.
+// Stand links from the hook's output: `internal=…` / `external=…` lines anywhere in the output.
+// Everything else is ordinary log, shown as a tail.
 export type StandLinks = { internal?: string; external?: string }
 
 export function parseStandLinks(out: string): StandLinks {
@@ -44,7 +44,7 @@ export function parseStandLinks(out: string): StandLinks {
   return links
 }
 
-// Хвост вывода для чата: без строк-ссылок (они уже отрендерены отдельно) и без пустых.
+// Output tail for chat: without the link lines (already rendered separately) and without blanks.
 export function standLogTail(out: string, err: string, maxLines = 12): string {
   const lines = `${out}\n${err}`
     .split('\n')

@@ -3,6 +3,7 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import { STATE_DIR } from './paths'
 import { safeJsonParse } from './util'
+import { t } from './i18n'
 
 export const TRUSTED_GROUPS_FILE = join(STATE_DIR, 'trusted-groups.json')
 
@@ -21,9 +22,8 @@ export type TrustedGroupConfig = {
   exclude?: { topicIds?: number[]; nameContains?: string[] }
 }
 
-export const MODE_LABEL: Record<TrustedGroupMode, string> = {
-  folder: '📁 Папка по умолчанию',
-  worktree: '🌿 Worktree (своя git-ветка)',
+export function modeLabel(mode: TrustedGroupMode): string {
+  return mode === 'worktree' ? t().modeLabelWorktree : t().modeLabelFolder
 }
 
 const DEFAULT_MODES: TrustedGroupMode[] = ['folder']
