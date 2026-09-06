@@ -1,5 +1,6 @@
 // NDJSON protocol between stub and hub over the hub.sock unix socket.
 import type { AgentKind } from './agents/types'
+import type { SessionCron } from './session-crons'
 
 export type SessionInfo = {
   agent?: AgentKind // absent on an old stub means Claude
@@ -33,7 +34,7 @@ export type StubToHub =
   // NEXT subagent start opens a fresh message instead of appending to a finished one.
   // `bg` = the Stop payload's background_tasks: the shells STILL running. Completed ones are
   // dropped from it, so "listed before, absent now" is the only completion signal there is.
-  | { op: 'subagent'; action: 'turnend'; bindingKeys: string[]; sessionId?: string; bg?: { command: string; description?: string }[] }
+  | { op: 'subagent'; action: 'turnend'; bindingKeys: string[]; sessionId?: string; bg?: { command: string; description?: string }[]; crons?: SessionCron[] }
   // TaskCreate/TaskUpdate (the todo-list tool) — unlike subagents, id/subject/status come
   // straight off one event each, no promptId correlation needed
   | { op: 'task'; action: 'create'; bindingKeys: string[]; sessionId?: string; taskId: string; subject: string }

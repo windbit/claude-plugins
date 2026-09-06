@@ -267,6 +267,9 @@ export const ru: Strings = {
   tmuxNone: 'нет сессии',
   statusTmux: (name, state) => `🪟 tmux <code>${name}</code>: ${state}`,
   statusResumeHint: '→ <code>/resume</code> чтобы поднять',
+  statusCronHold: (when, count) =>
+    `⏰ кроны и лупы в сессии: ${count} — не выгружаем, ближайший запуск ${when}`,
+  statusCronList: (schedule, once) => `   <code>${schedule}</code>${once ? ' <i>(одноразовый)</i>' : ''}`,
   statusPinned: '📌 закреплена — не выгружается по простою',
   statusIdleUnload: min => `💤 выгрузка по простою через ${min} мин (<code>/pin</code> чтобы держать)`,
   statusStandUp: url => `🖥 стенд: 🟢 поднят${url ? ` → ${url}` : ''}`,

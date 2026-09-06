@@ -320,11 +320,13 @@ describe('tmux-ops', () => {
   test('isIdleToUnload: threshold, pinned, working guards', () => {
     const T = 60 * 60_000 // 1h
     const now = 10_000_000
-    expect(isIdleToUnload(now, now - T, T, false, false)).toBe(true) // idle exactly the threshold
-    expect(isIdleToUnload(now, now - T + 1, T, false, false)).toBe(false) // just under
-    expect(isIdleToUnload(now, now - 2 * T, T, true, false)).toBe(false) // pinned → never
-    expect(isIdleToUnload(now, now - 2 * T, T, false, true)).toBe(false) // working → wait
-    expect(isIdleToUnload(now, now - 2 * T, 0, false, false)).toBe(false) // disabled (0)
+    const idle = (lastActive: number, extra: Partial<{ thresholdMs: number; held: boolean; working: boolean }> = {}) =>
+      isIdleToUnload({ now, lastActive, thresholdMs: T, held: false, working: false, ...extra })
+    expect(idle(now - T)).toBe(true) // idle exactly the threshold
+    expect(idle(now - T + 1)).toBe(false) // just under
+    expect(idle(now - 2 * T, { held: true })).toBe(false) // запинен или держат кроны → никогда
+    expect(idle(now - 2 * T, { working: true })).toBe(false) // working → wait
+    expect(idle(now - 2 * T, { thresholdMs: 0 })).toBe(false) // disabled (0)
   })
 
   test('isHeadlessArgv: one-shot -p runs must never be learned as a binding launch command', () => {

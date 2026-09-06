@@ -355,6 +355,13 @@ its full history (`--resume`), announced by one quiet line.
 
 `/pin` exempts a topic. Unset (the default) means the plugin never stops anything.
 
+**A session with a live cron or loop is kept awake by itself.** Claude Code reports the
+session's schedules in its Stop hook, so the bot knows a topic has one and does not unload it
+while the next run is within 12 hours — a session stopped for idleness takes its schedule to the
+grave, and the promised run simply never happens. `/status` shows what is holding the session
+and when it fires next; the hold lifts on its own once the cron is deleted, has fired for the
+last time, or the session has gone quiet for a day.
+
 **The stand sleeps with the session.** If the project declares `stand.sleep` / `stand.wake`
 in `.tmux-channels.json`, unloading an idle session also stops its stand, and the first message
 after the pause starts it back up — in parallel with the agent, so the two waits overlap. There is

@@ -1,4 +1,5 @@
 import type { StubToHub } from './protocol'
+import { parseSessionCrons } from './session-crons'
 
 export type HookMode =
   | 'describe' | 'start' | 'stop' | 'turnend'
@@ -22,7 +23,10 @@ export function normalizeHookMessage(
       .filter(b => b.type === 'shell')
       .map(b => ({ command: String(b.command ?? ''), ...(b.description ? { description: String(b.description) } : {}) }))
       .filter(b => b.command)
-    msg = { op: 'subagent', action: 'turnend', bindingKeys, bg }
+    // Кроны/лупы сессии едут тем же сообщением: Stop приходит на каждом конце хода, и это
+    // единственный payload, где Claude Code их отдаёт. Хабу они нужны, чтобы не погасить по
+    // простою сессию, вместе с которой умрёт и расписание.
+    msg = { op: 'subagent', action: 'turnend', bindingKeys, bg, crons: parseSessionCrons(data.session_crons) }
   } else if (mode === 'compaction-start' || mode === 'compaction-done') {
     const trigger = data.trigger === 'manual' || data.trigger === 'auto' ? data.trigger : undefined
     msg = { op: 'compaction', phase: mode === 'compaction-start' ? 'start' : 'done', bindingKeys, ...(trigger ? { trigger } : {}) }

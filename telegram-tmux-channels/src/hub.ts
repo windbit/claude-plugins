@@ -60,6 +60,7 @@ import { ProgressPost } from './progress-post'
 import { AnswerStream } from './answer-stream'
 import { literalSendText } from './literal-send'
 import { isHeldTooLong, isLivePaneKey, screenPollMs, uniqueByPane } from './screen-poll'
+import { cronHold, type SessionCron } from './session-crons'
 import { startupAckKey } from './startup-ack'
 import { WORKFLOW_SUBAGENT } from './hook-normalize'
 import { replyContext, type ReplyContext } from './reply-context'
@@ -1862,8 +1863,9 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
     return
   }
   if (msg.action === 'turnend') {
-    log(`subagent: turnend keys=${msg.bindingKeys.join(',')} bg=${msg.bg?.length ?? 0}`)
+    log(`subagent: turnend keys=${msg.bindingKeys.join(',')} bg=${msg.bg?.length ?? 0}${msg.crons?.length ? ` crons=${msg.crons.length}` : ''}`)
     for (const key of msg.bindingKeys) {
+      noteSessionCrons(key, msg.crons ?? [])
       await reconcileBg(key, msg.bg ?? []) // before endTurn: pushStatus clears the turn-ended flag
       statusPost.endTurn(key)
       await forwardFallbackReply(key) // agent didn't reply → forward its final text ourselves
@@ -2383,17 +2385,43 @@ const startScopeReaper = (): void => {
   setInterval(() => void reapDeadScopes(log), SCOPE_REAP_MS)
 }
 
+// Кроны и лупы сессии: приходят с каждым концом хода (Stop-хук). Держим их в памяти, а не на
+// диске, намеренно — они и сами живут только пока жива сессия, и переживать рестарт хабу нечего.
+const sessionCrons = new Map<string, { crons: SessionCron[]; seenAt: number }>()
+
+function noteSessionCrons(key: string, crons: SessionCron[]): void {
+  if (crons.length) {
+    sessionCrons.set(key, { crons, seenAt: Date.now() })
+    return
+  }
+  sessionCrons.delete(key) // крон сняли или он отработал и удалился сам — держать больше нечего
+}
+
+/** Почему сессию нельзя гасить по простою: пин Ромы или живое расписание внутри неё. */
+function unloadHold(key: string, now = Date.now()): { why: 'pinned' } | { why: 'cron'; at: number; cron: SessionCron } | undefined {
+  if (loadBindings()[key]?.pinned) {
+    return { why: 'pinned' }
+  }
+  const seen = sessionCrons.get(key)
+  if (!seen) {
+    return undefined
+  }
+  const hold = cronHold(seen.crons, seen.seenAt, now)
+  return hold.held ? { why: 'cron', at: hold.at, cron: hold.cron } : undefined
+}
+
 // Stop a quiet, unpinned, past-threshold session; the next inbound message revives it.
 async function maybeIdleUnload(s: SessionInfo & { pane: string }, working: boolean): Promise<void> {
   const keys = s.bindingKeys ?? []
-  const reg = loadBindings()
-  if (keys.length === 0 || keys.some(k => reg[k]?.pinned)) {
-    return // pinned binding on this session → never unload
+  if (keys.length === 0) {
+    return
   }
   const now = Date.now()
+  // Держит хотя бы один биндинг сессии — сессия одна на всех, гасить нельзя.
+  const hold = keys.map(k => unloadHold(k, now)).find(Boolean)
   const lastActive = Math.max(...keys.map(k => lastActivity.get(k) ?? now))
   const key = keys[0]
-  if (unloading.has(key) || !isIdleToUnload(now, lastActive, IDLE_UNLOAD_MS, false, working)) {
+  if (unloading.has(key) || !isIdleToUnload({ now, lastActive, thresholdMs: IDLE_UNLOAD_MS, held: !!hold, working })) {
     return
   }
   if (!s.pid) {
@@ -3353,6 +3381,7 @@ async function teardownBinding(
 
 
 function purgeBindingInteractions(key: string): void {
+  sessionCrons.delete(key) // расписание принадлежало той сессии — вместе с биндингом уходит и оно
   // Очередь принадлежит биндингу: переживёт его — при следующем `/bind` этого же топика сядет
   // в чужую сессию. Чистим и в памяти, и на диске: иначе она вернётся рестартом хаба.
   queuedMessages.delete(key)
@@ -4859,10 +4888,18 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       const tmuxState = (await hasTmuxSession(name)) ? L.tmuxHas : L.tmuxNone
       lines.push(L.statusTmux(escHtml(name), tmuxState), '', L.statusResumeHint)
     }
+    // Порядок строк = порядок причин: сперва почему НЕ уснёт, потом когда уснёт.
+    const cronsHere = sessionCrons.get(key)?.crons ?? []
+    const hold = unloadHold(key)
     if (binding.pinned) {
       lines.push('', L.statusPinned)
+    } else if (hold?.why === 'cron') {
+      lines.push('', L.statusCronHold(new Date(hold.at).toLocaleString('ru-RU'), cronsHere.length))
     } else if (IDLE_UNLOAD_MS > 0) {
       lines.push('', L.statusIdleUnload(Math.round(IDLE_UNLOAD_MS / 60_000)))
+    }
+    for (const cron of cronsHere) {
+      lines.push(L.statusCronList(escHtml(cron.schedule), !cron.recurring))
     }
     // Stand — only if the project can probe it at all (`.tmux-channels.json` → stand.status).
     const stand = await runStandCommand(binding.dir, 'status')

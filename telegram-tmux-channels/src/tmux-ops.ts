@@ -130,12 +130,15 @@ export function tmuxSessionName(dirBase: string, key: string, slug?: string): st
   return base.replace(/[.:\/]/g, '_')
 }
 
-// Idle-unload decision: is this binding idle enough to stop? False while working, for a
-// pinned binding, or before the threshold. thresholdMs<=0 disables. Pure — tested in core.test.ts.
-export function isIdleToUnload(
-  now: number, lastActive: number, thresholdMs: number, pinned: boolean, working: boolean,
-): boolean {
-  return thresholdMs > 0 && !pinned && !working && now - lastActive >= thresholdMs
+/** Пора ли гасить простаивающий биндинг. Чистая — тесты в core.test.ts.
+ *
+ *  `held` — сессию держат: её запинили или в ней живут кроны/лупы, которые умрут вместе с ней.
+ *  `thresholdMs <= 0` выключает выгрузку совсем. */
+export function isIdleToUnload(opts: {
+  now: number; lastActive: number; thresholdMs: number; held: boolean; working: boolean
+}): boolean {
+  const { now, lastActive, thresholdMs, held, working } = opts
+  return thresholdMs > 0 && !held && !working && now - lastActive >= thresholdMs
 }
 
 export function shellQuote(args: string[]): string {
