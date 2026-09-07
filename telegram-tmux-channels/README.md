@@ -385,7 +385,7 @@ Environment, in `~/.claude/channels/telegram/.env`:
 | `TELEGRAM_LAUNCH_CMD` | `claude --permission-mode bypassPermissions` | Claude launch command; Codex defaults to `codex` and learns its live argv |
 | `TELEGRAM_CODEX_APPROVALS` | off | `1` keeps Codex sandboxed and asks for approvals in the topic instead of running with full access |
 | `TELEGRAM_IDLE_UNLOAD_MINUTES` | `0` | Idle minutes before a session is stopped; `0` disables |
-| `TELEGRAM_MEMORY_MAX` | — | Per-session memory cap (`6G`) via `systemd-run --scope`, so a runaway session dies alone instead of OOM-ing the host. Linux/systemd only |
+| `TELEGRAM_MEMORY_MAX` | — | Per-session memory cap (e.g. `12G`) via `systemd-run --scope`, so a runaway session dies alone instead of OOM-ing the host. It caps the session AND everything it starts: a child wrapped in its own `systemd-run --scope -p MemoryMax=…` still counts here, and the parent kills first. Linux/systemd only |
 | `TELEGRAM_MEMORY_SLICE` | — | systemd slice for those scopes (`tgc-agents`), so one cgroup accounts for every session at once — and can carry a shared `MemoryHigh=` if you ever need one |
 | `TELEGRAM_CONTEXT_WARN_PCT` | `80` | Warn under a reply once the context window is this full; `0` disables |
 | `TELEGRAM_HUB_AUTOSPAWN` | `1` | `0` if you run the hub as a service instead |
