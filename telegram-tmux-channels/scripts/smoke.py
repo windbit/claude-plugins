@@ -117,16 +117,18 @@ def buttons(mcp, chat, msg_id=None):
 
 
 def pick_mode(opts, case):
-    """Индекс кнопки режима. worktree в пикере подписан по базе («🌿 worktree от dev»),
-    а там, где у проекта есть create-хук, рядом стоит вариант без него."""
+    """Индекс кнопки режима. worktree в пикере подписан по базе («🌿 worktree от dev»);
+    со стендом резать или без — решает переключатель хука, а не отдельная кнопка."""
     if case.startswith('worktree'):
-        plain = case == 'worktree-plain'
-        i = next((i for i, t in enumerate(opts)
-                  if 'worktree' in t.lower() and ('hook' in t.lower() or 'хук' in t.lower()) == plain), None)
+        i = next((i for i, t in enumerate(opts) if 'worktree' in t.lower()), None)
         if i is None:
             raise AssertionError(f'в пикере нет режима {case}: {opts}')
         return i
     return next(i for i, t in enumerate(opts) if 'Default folder' in t)
+
+
+def hook_is_on(label):
+    return not (label.lower().rstrip().endswith('off') or 'выкл' in label.lower())
 
 
 def exchange(mcp, chat, tid, agent, reply_timeout, prompt=PROMPT):
@@ -183,6 +185,15 @@ def run(mcp, chat, agent, reply_timeout, case='folder'):
             break
         mcp.call('press_inline_button', chat_id=chat, message_id=pick_id, button_index=0)
         opts = [b['text'] for b in buttons(mcp, chat, pick_id)['results']]
+    # стенд — тем же переключателем, что и харнесс: подпись показывает текущее положение
+    for _ in range(3):
+        cur = next((t for t in opts if t.startswith('🪝')), None)
+        if not cur or hook_is_on(cur) == (case != 'worktree-plain'):
+            break
+        mcp.call('press_inline_button', chat_id=chat, message_id=pick_id, button_index=opts.index(cur))
+        opts = [b['text'] for b in buttons(mcp, chat, pick_id)['results']]
+    if case == 'worktree-plain' and not any(t.startswith('🪝') for t in opts):
+        raise AssertionError(f'в пикере нет переключателя стенда: {opts}')
     mode_idx = pick_mode(opts, case)
     mcp.call('press_inline_button', chat_id=chat, message_id=pick_id, button_index=mode_idx)
     print(f'  выбран {want} + {opts[mode_idx]}')

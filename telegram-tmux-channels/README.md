@@ -340,9 +340,12 @@ How it's run:
   to a half-built worktree.
 - `delete` runs on `/unbind` and `/delete`. Skip it and the bot falls back to
   `git worktree remove` — which will leave your database behind, so define it if you created one.
-- Where a `create` hook exists the picker also offers **🌿 Worktree · no project hook** — a plain
-  `git worktree add`, no database, no stand. A topic opened just to read code or write a patch
-  shouldn't pay for an environment; that topic is torn down with plain `git worktree remove` too.
+- Where a `create` hook exists the picker gains a **🪝 Project hook: on/off** switch — the same
+  toggle style as Claude Code ↔ Codex, flipped in place before you pick a mode. Turn it off and
+  the worktree is cut by plain `git worktree add`: no database, no stand. A topic opened just to
+  read code or write a patch shouldn't pay for an environment; that topic is torn down with plain
+  `git worktree remove` too. The switch changes what the worktree buttons do rather than adding a
+  second row per base — with several bases the old duplicate rows doubled the picker.
 - A project's own `.tmux-channels.json` wins over the group-level hook in `trusted-groups.json`:
   one group can hold several repos, each with its own way of making a branch.
 

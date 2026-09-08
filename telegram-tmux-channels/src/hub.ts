@@ -43,6 +43,7 @@ import {
   loadTrustedGroups, isExcludedTopic, slugFromTopicName, modeLabel,
   type TrustedGroupConfig, type TrustedGroupMode,
 } from './trusted-groups'
+import { modeButtons } from './mode-picker'
 import { t, getLang, setLang, type Lang } from './i18n'
 import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree, runStandCommand, worktreeHook, isLinkedWorktree, isPlainWorktreeDir } from './dir-resolve'
 import { PROJECT_CONFIG_FILE, parseStandLinks, standLogTail, worktreeBases } from './project-config'
@@ -3449,7 +3450,7 @@ function armPendingTopic(key: string, value: PendingTopic): void {
 }
 function disarmPendingTopic(key: string): void { pendingTopics.delete(key); interactions.delete('pending-topic', key) }
 // mode picker sent, waiting for a button tap — before dir resolution starts
-type PendingModeChoice = { cfg: TrustedGroupConfig; topicName: string; say: (html: string) => void; agent?: AgentKind }
+type PendingModeChoice = { cfg: TrustedGroupConfig; topicName: string; say: (html: string) => void; agent?: AgentKind; hookOff?: boolean }
 const pendingModeChoice = new Map<string, PendingModeChoice>()
 
 // Messages typed while a topic is still being set up (mode not yet picked, session not yet
@@ -3478,7 +3479,7 @@ function sayFor(chatId: string, threadId: number) {
 }
 function armMode(key: string, value: PendingModeChoice, chatId: string, threadId: number): void {
   pendingModeChoice.set(key, value)
-  stateRepo.setPendingMode(key, { cfg: value.cfg, topicName: value.topicName, chatId, threadId, ...(value.agent ? { agent: value.agent } : {}) })
+  stateRepo.setPendingMode(key, { cfg: value.cfg, topicName: value.topicName, chatId, threadId, ...(value.agent ? { agent: value.agent } : {}), ...(value.hookOff ? { hookOff: true } : {}) })
 }
 function disarmMode(key: string): void { pendingModeChoice.delete(key); stateRepo.delPendingMode(key) }
 const TOPIC_RETRY_TTL_MS = 24 * 60 * 60_000
@@ -3695,39 +3696,27 @@ function harnessChoices(cfg: TrustedGroupConfig): AgentKind[] {
   return choices.length > 1 ? [...choices] : []
 }
 
-function modeKeyboard(key: string, cfg: TrustedGroupConfig, agent?: AgentKind): InlineKeyboard {
-  const kb = new InlineKeyboard()
-  const bases = cfg.dir ? worktreeBases(cfg.dir) : []
-  // Переключатель, а не отдельная кнопка на каждую пару «режим × харнесс»: режимов уже три,
-  // и перемножать их значит утопить пикер в рядах.
+/** Есть ли у проекта create-хук — только тогда «со стендом / без стенда» вообще различаются. */
+function hasProjectHook(cfg: TrustedGroupConfig): boolean {
+  return cfg.dir ? !!worktreeHook(cfg.dir, cfg.hook)?.create : false
+}
+
+function modeKeyboard(key: string, cfg: TrustedGroupConfig, agent?: AgentKind, hookOff = false): InlineKeyboard {
   const choices = harnessChoices(cfg)
-  if (choices.length) {
-    const current = agent ?? cfg.agent ?? choices[0]!
-    kb.text(t().harnessToggle(agentAdapter(current).displayName), `topicharness:${key}`).row()
+  const current = agent ?? cfg.agent ?? choices[0]
+  const buttons = modeButtons({
+    key,
+    modes: cfg.modes,
+    bases: cfg.dir ? worktreeBases(cfg.dir) : [],
+    hooked: hasProjectHook(cfg),
+    hookOff,
+    ...(choices.length && current ? { harness: agentAdapter(current).displayName } : {}),
+  })
+  const kb = new InlineKeyboard()
+  for (const b of buttons) {
+    kb.text(b.text, b.data).row()
   }
-  // Хук проекта поднимает окружение (стенд, БД, слот) — это минуты и ресурсы, а топик часто
-  // нужен только под код. Поэтому там, где хук есть, рядом стоит и голый вариант.
-  const hooked = cfg.dir ? !!worktreeHook(cfg.dir, cfg.hook)?.create : false
-  const worktreeModes: TrustedGroupMode[] = hooked ? ['worktree', 'worktree-plain'] : ['worktree']
-  for (const m of cfg.modes) {
-    if (m === 'worktree') {
-      for (const wm of worktreeModes) {
-        // Несколько баз — размножаем саму кнопку «worktree», отдельного пикера не заводим:
-        // выбор режима и выбор базы — один вопрос, один тап.
-        if (bases.length > 1) {
-          bases.forEach((b, i) => kb.text(
-            wm === 'worktree' ? t().modeWorktreeFrom(b) : t().modeWorktreePlainFrom(b),
-            `topicmode:${key}:${wm}:${i}`,
-          ).row())
-          continue
-        }
-        kb.text(modeLabel(wm), `topicmode:${key}:${wm}`).row()
-      }
-      continue
-    }
-    kb.text(modeLabel(m), `topicmode:${key}:${m}`).row()
-  }
-  return kb.text(ownDirLabel(), `topicdir:${key}`).row()
+  return kb
 }
 
 const modeExplain = (m: TrustedGroupMode): string => (m === 'folder' ? t().modeIntroFolder : t().modeIntroWorktree)
@@ -3813,7 +3802,7 @@ for (const [key, values] of stateRepo.queuedEntries()) {
   liveQueue(key) // протухшее с прошлого запуска не воскрешаем — топик уехал дальше без него
 }
 for (const [key, value] of stateRepo.pendingModeEntries()) {
-  pendingModeChoice.set(key, { cfg: value.cfg, topicName: value.topicName, say: sayFor(value.chatId, value.threadId), ...(value.agent ? { agent: value.agent } : {}) })
+  pendingModeChoice.set(key, { cfg: value.cfg, topicName: value.topicName, say: sayFor(value.chatId, value.threadId), ...(value.agent ? { agent: value.agent } : {}), ...(value.hookOff ? { hookOff: true } : {}) })
 }
 
 async function handleInbound(inbound: Inbound): Promise<void> {
@@ -5553,7 +5542,28 @@ bot.on('callback_query:data', async ctx => {
     const target = keyToTarget(key!)
     armMode(key!, { ...pending, agent: next }, target.chat_id, target.thread_id!)
     await ctx.answerCallbackQuery({ text: agentAdapter(next).displayName }).catch(() => {})
-    await ctx.editMessageReplyMarkup({ reply_markup: modeKeyboard(key!, pending.cfg, next) }).catch(() => {})
+    await ctx.editMessageReplyMarkup({ reply_markup: modeKeyboard(key!, pending.cfg, next, pending.hookOff) }).catch(() => {})
+    return
+  }
+  const thk = /^topichook:(.+)$/.exec(ctx.callbackQuery.data)
+  if (thk) {
+    const [, key] = thk
+    const pending = pendingModeChoice.get(key!)
+    if (!pending) {
+      await ctx.answerCallbackQuery({ text: t().toastAlreadyChosen }).catch(() => {})
+      return
+    }
+    if (!isAdmin(String(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: t().toastNoRights }).catch(() => {})
+      return
+    }
+    const hookOff = !pending.hookOff
+    const target = keyToTarget(key!)
+    armMode(key!, { ...pending, hookOff }, target.chat_id, target.thread_id!)
+    await ctx.answerCallbackQuery({ text: t().hookToggle(!hookOff) }).catch(() => {})
+    await ctx.editMessageReplyMarkup({
+      reply_markup: modeKeyboard(key!, pending.cfg, pending.agent, hookOff),
+    }).catch(() => {})
     return
   }
   const tm = /^topicmode:(.+):(folder|worktree-plain|worktree)(?::(\d+))?$/.exec(ctx.callbackQuery.data)

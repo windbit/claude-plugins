@@ -326,7 +326,7 @@ export const ru: Strings = {
   branchNote: branch => `, ветка <code>${branch}</code>`,
   harnessToggle: name => `🔄 ${name}`,
   modeWorktreeFrom: base => `🌿 worktree от ${base}`,
-  modeWorktreePlainFrom: base => `🌿 worktree от ${base} · без хука проекта`,
+  hookToggle: on => (on ? '🪝 Хук проекта: вкл' : '🪝 Хук проекта: выкл'),
   branchRenamed: (wanted, used) =>
     `🔀 Ветка <code>${wanted}</code> уже есть (топик с таким именем был раньше) — ` +
     `работаю в <code>${used}</code>, срезанной от свежей базы.`,

@@ -336,7 +336,7 @@ Send <code>/last</code> to see its terminal, or <code>/restart</code>.`,
   branchNote: (branch: string) => `, branch <code>${branch}</code>`,
   harnessToggle: (name: string) => `🔄 ${name}`,
   modeWorktreeFrom: (base: string) => `🌿 worktree from ${base}`,
-  modeWorktreePlainFrom: (base: string) => `🌿 worktree from ${base} · no project hook`,
+  hookToggle: (on: boolean): string => (on ? '🪝 Project hook: on' : '🪝 Project hook: off'),
   branchRenamed: (wanted: string, used: string) =>
     `🔀 Branch <code>${wanted}</code> already exists (an older topic of the same name) — ` +
     `working in <code>${used}</code>, cut fresh from the base.`,
