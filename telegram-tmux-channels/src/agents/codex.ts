@@ -1,11 +1,13 @@
-import { closeSync, openSync, readSync, readdirSync, statSync } from 'fs'
+import { closeSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import type { AgentAdapter, AgentStatusPanel, LaunchMode, RecentAgentSession } from './types'
 import { shellQuote } from '../tmux-ops'
 import { isCodexArgv } from '../proc'
+import { STATE_DIR } from '../paths'
 
-type Rollout = { id: string; path: string; mtime: number; cwd: string; firstUser: string }
+type RolloutMeta = { id: string; cwd: string }
+type Rollout = RolloutMeta & { path: string; mtime: number; firstUser: string }
 
 export { isCodexArgv }
 
@@ -90,38 +92,54 @@ function displayRolloutSnippet(text: string): string {
   return text.replace(/^\[Telegram message;[^\n]*\]\s*/u, '').trim()
 }
 
-function parseRollout(path: string): Rollout | undefined {
-  // Session metadata and the first user turn live at the head of the rollout. Reading a
-  // multi-megabyte active transcript on every delivery poll made the watchdog increasingly
-  // expensive over the lifetime of a conversation.
-  let text = ''
+function readHead(path: string, bytes: number): string {
   try {
     const size = statSync(path).size
     const fd = openSync(path, 'r')
-    const buf = Buffer.alloc(Math.min(size, 262144))
-    readSync(fd, buf, 0, buf.length, 0)
-    closeSync(fd)
-    text = buf.toString('utf8')
-  } catch { return undefined }
-  let id = ''
-  let cwd = ''
+    try {
+      const buf = Buffer.alloc(Math.min(size, bytes))
+      readSync(fd, buf, 0, buf.length, 0)
+      return buf.toString('utf8')
+    } finally { closeSync(fd) }
+  } catch { return '' }
+}
+
+/** Первая строка роллаута — `session_meta`, и в ней уже есть всё для отбора: id, папка, происхождение. */
+export function parseRolloutMeta(firstLine: string): RolloutMeta | undefined {
+  let row: { type?: string; payload?: Record<string, unknown> }
+  try { row = JSON.parse(firstLine) } catch { return undefined }
+  if (row.type !== 'session_meta') return undefined
+  const id = String(row.payload?.id ?? '')
+  const cwd = String(row.payload?.cwd ?? '')
+  // У сабагента `source` — объект с деталями порождения, у настоящей сессии строка ('cli'/'exec').
+  // Роллауты сабагентов лежат теми же файлами и с той же папкой: у habebe-trader их больше, чем
+  // сессий, и пикер показывал бы почти одних их.
+  if (!id || !cwd || typeof row.payload?.source === 'object') return undefined
+  return { id, cwd }
+}
+
+// Голову читаем в два приёма: сперва одну строку метаданных (её потолок — 38 КБ), и только у
+// совпавших по папке лезем за подписью вглубь. Скан всех роллаутов стоил 3.1 с и звался из пяти
+// горячих путей; с предфильтром — 0.4 с.
+const META_HEAD_BYTES = 64 * 1024
+const SNIPPET_HEAD_BYTES = 256 * 1024
+
+function parseRollout(path: string): Rollout | undefined {
+  const meta = parseRolloutMeta(readHead(path, META_HEAD_BYTES).split('\n', 1)[0] ?? '')
+  if (!meta) return undefined
+  const text = readHead(path, SNIPPET_HEAD_BYTES)
   let firstUser = ''
   for (const line of text.split('\n')) {
     if (!line) continue
     try {
       const row = JSON.parse(line) as { type?: string; payload?: Record<string, unknown> }
-      if (row.type === 'session_meta') {
-        id = String(row.payload?.id ?? '')
-        cwd = String(row.payload?.cwd ?? '')
-      } else if (!firstUser && row.type === 'response_item' && row.payload?.type === 'message' && row.payload.role === 'user') {
+      if (row.type === 'response_item' && row.payload?.type === 'message' && row.payload.role === 'user') {
         const raw = stringsFromContent(row.payload.content, 'input_text').join(' ')
-        if (!isBootstrapEnvelope(raw)) firstUser = rolloutUserSnippet(row.payload.content)
+        if (!isBootstrapEnvelope(raw)) { firstUser = rolloutUserSnippet(row.payload.content); break }
       }
     } catch {}
-    if (id && cwd && firstUser) break
   }
-  if (!id || !cwd) return undefined
-  try { return { id, cwd, path, firstUser, mtime: statSync(path).mtimeMs } } catch { return undefined }
+  try { return { ...meta, path, firstUser, mtime: statSync(path).mtimeMs } } catch { return undefined }
 }
 
 function walkRollouts(root: string, out: string[] = []): string[] {
@@ -139,8 +157,67 @@ function codexSessionsRoot(): string {
   return join(process.env.CODEX_HOME?.trim() || join(homedir(), '.codex'), 'sessions')
 }
 
+// Метаданные роллаутов кэшируем по (mtime, size) И держим на диске: у Codex нет каталога по
+// проекту, поэтому «сессии этой папки» — это обход ВСЕХ роллаутов (у нас 2664 файла, 588 МБ).
+// Без диска первый вызов после рестарта хаба читал их заново — 8.8 с на холодном кэше; с ним
+// остаётся только stat каждого файла. Зовут этот путь пять горячих мест: доставка, сторож
+// ответа, /status, пикер и учёт нового id.
+type IndexEntry = { mtime: number; size: number; meta?: RolloutMeta }
+// Путь читаем на каждом обращении, а не на импорте: тесты уводят состояние во временный каталог.
+const indexFile = (): string => join(process.env.TELEGRAM_STATE_DIR ?? STATE_DIR, 'codex-index.json')
+let metaIndex: Map<string, IndexEntry> | undefined
+let indexDirty = false
+
+function loadIndex(): Map<string, IndexEntry> {
+  if (metaIndex) return metaIndex
+  try {
+    const raw = JSON.parse(readFileSync(indexFile(), 'utf8')) as Record<string, IndexEntry>
+    metaIndex = new Map(Object.entries(raw))
+  } catch { metaIndex = new Map() }
+  return metaIndex
+}
+
+function saveIndex(): void {
+  if (!indexDirty || !metaIndex) return
+  indexDirty = false
+  try {
+    const file = indexFile()
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, JSON.stringify(Object.fromEntries(metaIndex)))
+  } catch {} // индекс — ускоритель, а не состояние: не записался, значит просто перечитаем
+}
+
+function rolloutMeta(path: string): { meta?: RolloutMeta; mtime: number } | undefined {
+  let stat
+  try { stat = statSync(path) } catch { loadIndex().delete(path); return undefined }
+  const index = loadIndex()
+  const hit = index.get(path)
+  if (hit && hit.mtime === stat.mtimeMs && hit.size === stat.size) {
+    return { mtime: stat.mtimeMs, ...(hit.meta ? { meta: hit.meta } : {}) }
+  }
+  const meta = parseRolloutMeta(readHead(path, META_HEAD_BYTES).split('\n', 1)[0] ?? '')
+  index.set(path, { mtime: stat.mtimeMs, size: stat.size, ...(meta ? { meta } : {}) })
+  indexDirty = true
+  return { mtime: stat.mtimeMs, ...(meta ? { meta } : {}) }
+}
+
+// Подпись читается глубже метаданных, но только у файлов совпавшей папки — их единицы.
+const snippetCache = new Map<string, string>()
+
 export function codexRollouts(dir: string, root = codexSessionsRoot()): Rollout[] {
-  return walkRollouts(root).map(parseRollout).filter((r): r is Rollout => r?.cwd === dir)
+  const out: Rollout[] = []
+  for (const path of walkRollouts(root)) {
+    const head = rolloutMeta(path)
+    if (!head?.meta || head.meta.cwd !== dir) continue
+    let firstUser = snippetCache.get(path)
+    if (firstUser === undefined) {
+      firstUser = parseRollout(path)?.firstUser ?? ''
+      snippetCache.set(path, firstUser)
+    }
+    out.push({ ...head.meta, path, firstUser, mtime: head.mtime })
+  }
+  saveIndex()
+  return out
 }
 
 function selected(dir: string, sessionId?: string): Rollout | undefined {

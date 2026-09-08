@@ -4,6 +4,7 @@
 import { readdirSync, statSync, openSync, readSync, closeSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
+import { StringDecoder } from 'string_decoder'
 
 export function claudeProjectDir(dir: string): string {
   return join(homedir(), '.claude', 'projects', dir.replace(/[^A-Za-z0-9]/g, '-'))
@@ -28,34 +29,80 @@ export function jsonlMtimes(dir: string): Map<string, number> {
   return out
 }
 
-// First user text of a session, for resume-picker button labels. Reads only the
-// head of the file — enough for a label, cheap on multi-MB transcripts.
-function firstUserText(dir: string, id: string): string {
-  try {
-    const fd = openSync(join(claudeProjectDir(dir), `${id}.jsonl`), 'r')
-    const buf = Buffer.alloc(65536)
-    const n = readSync(fd, buf, 0, buf.length, 0)
-    closeSync(fd)
-    for (const line of buf.toString('utf8', 0, n).split('\n')) {
-      try {
-        const j = JSON.parse(line) as {
-          type?: string
-          message?: { content?: string | Array<{ type?: string; text?: string }> }
-        }
-        if (j.type !== 'user') {
-          continue
-        }
-        const c = j.message?.content
-        const raw = typeof c === 'string' ? c : (c?.find(p => p.type === 'text')?.text ?? '')
-        // channel/system tags wrap real text — strip them for the label
-        const text = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
-        if (text) {
-          return text
-        }
-      } catch {}
+// Подпись сессии для пикера. Половина телеграмных сессий начинается с «привет», поэтому первый
+// промпт как имя не годится: пять свежих сессий подряд выглядят одинаково. Берём первый
+// СОДЕРЖАТЕЛЬНЫЙ, а короткий оставляем запасным вариантом — пустая кнопка хуже плохой.
+const SNIPPET_MIN_CHARS = 25
+// Врезки, которые пишет не человек: их видно в начале продолженных и консольных сессий.
+const SNIPPET_BOILERPLATE = [/^Caveat:/i, /^This session is being continued/i, /^\[Request interrupted/i]
+
+/** Первый содержательный и первый любой пользовательский текст из кусочка транскрипта. */
+export function pickUserSnippet(lines: string[]): { meaningful?: string; first?: string } {
+  let first: string | undefined
+  for (const line of lines) {
+    let parsed: { type?: string; message?: { content?: string | Array<{ type?: string; text?: string }> } }
+    try {
+      parsed = JSON.parse(line)
+    } catch {
+      continue // хвост куска обрывается на середине строки — дочитается следующим
     }
-  } catch {}
-  return ''
+    if (parsed.type !== 'user') {
+      continue
+    }
+    const content = parsed.message?.content
+    const raw = typeof content === 'string' ? content : (content?.find(p => p.type === 'text')?.text ?? '')
+    // теги канала и служебные врезки оборачивают настоящий текст — на подпись идёт только он
+    const text = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+    if (!text) {
+      continue
+    }
+    first ??= text
+    if (text.length >= SNIPPET_MIN_CHARS && !SNIPPET_BOILERPLATE.some(re => re.test(text))) {
+      return { meaningful: text, first }
+    }
+  }
+  return first === undefined ? {} : { first }
+}
+
+// Читаем ГОЛОВУ файла кусками, а не целиком: транскрипты бывают по сотне мегабайт. Первый
+// промпт лежит в среднем на 50 КБ (спереди блок вложений с CLAUDE.md и хуками), но у 5% сессий
+// глубже 60 КБ — на прежнем окне в 64 КБ каждая двадцатая кнопка оставалась без подписи.
+const SNIPPET_CHUNK_BYTES = 256 * 1024
+const SNIPPET_MAX_BYTES = 1024 * 1024
+
+function firstUserText(dir: string, id: string): string {
+  let fd: number | undefined
+  try {
+    fd = openSync(join(claudeProjectDir(dir), `${id}.jsonl`), 'r')
+    // Кусок может разрезать UTF-8 посередине символа — декодер держит хвост между чтениями.
+    const decoder = new StringDecoder('utf8')
+    const buf = Buffer.alloc(SNIPPET_CHUNK_BYTES)
+    let pending = ''
+    let fallback: string | undefined
+    for (let offset = 0; offset < SNIPPET_MAX_BYTES; offset += SNIPPET_CHUNK_BYTES) {
+      const n = readSync(fd, buf, 0, buf.length, offset)
+      if (n === 0) {
+        break
+      }
+      const lines = (pending + decoder.write(buf.subarray(0, n))).split('\n')
+      pending = lines.pop() ?? ''
+      const picked = pickUserSnippet(lines)
+      if (picked.meaningful) {
+        return picked.meaningful
+      }
+      fallback ??= picked.first
+      if (n < buf.length) {
+        break
+      }
+    }
+    return pickUserSnippet([pending]).meaningful ?? fallback ?? pickUserSnippet([pending]).first ?? ''
+  } catch {
+    return ''
+  } finally {
+    if (fd !== undefined) {
+      closeSync(fd)
+    }
+  }
 }
 
 // Which transcript belongs to a binding. `sessionId` (from bindings.json) wins: several topics
